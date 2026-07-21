@@ -23,6 +23,12 @@
 //! 2. Collect per-item results.
 //! 3. Write storage **only if every item validated successfully**.
 //!
+//! **IMPORTANT**: When implementing new batch operations that require authorization,
+//! never call `require_auth()` multiple times for the same address within a single
+//! transaction. Soroban's authorization system prevents this to avoid replay attacks.
+//! Instead, collect unique addresses first and authorize each unique address once.
+//! See `register_agents` Phase 0 for the correct pattern.
+//!
 //! Callers inspect the returned `Vec<BatchResult>` / `Vec<VoidBatchResult>`:
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
@@ -438,22 +444,39 @@ impl AgentRegistryContract {
             return results;
         }
 
+        // ── Phase 0: collect unique owners and authorize once per owner ──────
+        //
+        // Soroban's authorization system prevents calling require_auth() multiple
+        // times for the same address within a single transaction to avoid replay
+        // attacks. When batch processing agents with the same owner, we must
+        // deduplicate authorization calls by collecting unique owners first.
+        let mut unique_owners = Vec::new(&env);
+        for i in 0..agents.len() {
+            let record = agents.get(i).unwrap();
+            let mut already_seen = false;
+            for j in 0..unique_owners.len() {
+                if unique_owners.get(j).unwrap() == record.owner {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if !already_seen {
+                unique_owners.push_back(record.owner.clone());
+            }
+        }
+
+        // Authorize each unique owner once. Host will reject the whole invocation
+        // if any required auth is missing.
+        for i in 0..unique_owners.len() {
+            unique_owners.get(i).unwrap().require_auth();
+        }
+
         // ── Phase 1: validate (no writes) ────────────────────────────────────
-        // `require_auth` may be called at most once per address per frame; a
-        // second call for an owner already authorized here fails the whole
-        // invocation with `Auth, ExistingValue`. Batches routinely share one
-        // owner across items, so authorize each distinct owner exactly once.
-        let mut authorized: Vec<Address> = Vec::new(&env);
 
         for i in 0..agents.len() {
             let record = agents.get(i).unwrap();
 
-            // Auth first — host will reject the whole invocation if any
-            // required auth is missing; still checked per-item for clarity.
-            if !authorized.contains(&record.owner) {
-                record.owner.require_auth();
-                authorized.push_back(record.owner.clone());
-            }
+            // Auth already handled in Phase 0 for all unique owners.
 
             if require_not_frozen(&env, &record.id).is_err() {
                 results.push_back(BatchResult::Err(Error::AgentFrozen as u32));
@@ -959,7 +982,7 @@ mod test {
 
     #[test]
     fn set_admin_changes_admin() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let new_admin = Address::generate(&env);
         client.set_admin(&new_admin);
         assert_eq!(client.get_admin(), Some(new_admin));
@@ -981,7 +1004,7 @@ mod test {
 
     #[test]
     fn pause_blocks_register_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "agent_p", "test", owner));
@@ -990,7 +1013,7 @@ mod test {
 
     #[test]
     fn pause_blocks_deregister_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_d", "test", owner));
@@ -1001,7 +1024,7 @@ mod test {
 
     #[test]
     fn pause_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_u", "test", owner));
@@ -1012,7 +1035,7 @@ mod test {
 
     #[test]
     fn unpause_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         client.unpause();
         let owner = Address::generate(&env);
@@ -1052,7 +1075,7 @@ mod test {
 
     #[test]
     fn is_paused_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
+        let (_env, client, _admin) = setup_with_admin();
         assert!(!client.is_paused());
         client.pause();
         assert!(client.is_paused());
@@ -1062,7 +1085,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_f", "test", owner));
@@ -1073,7 +1096,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_register() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.freeze_agent(&Symbol::new(&env, "frozen_id"));
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "frozen_id", "test", owner));
@@ -1082,7 +1105,7 @@ mod test {
 
     #[test]
     fn unfreeze_agent_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_unf", "test", owner));
@@ -1125,7 +1148,7 @@ mod test {
 
     #[test]
     fn is_agent_frozen_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.freeze_agent(&Symbol::new(&env, "agent_state"));
         assert!(client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
