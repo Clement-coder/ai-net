@@ -27,7 +27,7 @@
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
 
@@ -118,7 +118,7 @@ pub enum DataKey {
     Agent(Symbol),
     CapabilityIndex(Symbol),
     FrozenAgent(Symbol),
-    Error(BytesN<32>),
+    ErrorRecord(BytesN<32>),
     GasConfig,
 }
 
@@ -138,7 +138,7 @@ pub enum VoidBatchResult {
     Err(Error),
 }
 
-#[contracterror]
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
@@ -150,6 +150,34 @@ pub enum Error {
     NotAdmin = 6,
     AlreadyResolved = 7,
     DuplicateInBatch = 8,
+}
+
+impl From<Error> for soroban_sdk::Error {
+    fn from(err: Error) -> Self {
+        soroban_sdk::Error::from_contract_error(err as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for Error {
+    fn from(err: soroban_sdk::Error) -> Self {
+        match err.get_code() {
+            1 => Error::NotFound,
+            2 => Error::Unauthorized,
+            3 => Error::AlreadyExists,
+            4 => Error::ContractPaused,
+            5 => Error::AgentFrozen,
+            6 => Error::NotAdmin,
+            7 => Error::AlreadyResolved,
+            8 => Error::DuplicateInBatch,
+            _ => Error::NotFound,
+        }
+    }
+}
+
+impl<'a> From<&'a Error> for soroban_sdk::Error {
+    fn from(err: &'a Error) -> Self {
+        soroban_sdk::Error::from_contract_error(*err as u32)
+    }
 }
 
 #[contract]
@@ -511,7 +539,7 @@ impl AgentRegistryContract {
     ) -> Result<(), Error> {
         reporter.require_auth();
 
-        let key = DataKey::Error(error_id.clone());
+        let key = DataKey::ErrorRecord(error_id.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::AlreadyExists);
         }
@@ -537,7 +565,8 @@ impl AgentRegistryContract {
         env: Env,
         error_ids: Vec<BytesN<32>>,
         resolution: Resolution,
-    ) -> Vec<VoidBatchResult> {
+    ) -> Result<Vec<VoidBatchResult>, Error> {
+        require_admin(&env)?;
         let mut results: Vec<VoidBatchResult> = Vec::new(&env);
         let mut all_ok = true;
 
@@ -551,7 +580,7 @@ impl AgentRegistryContract {
                 continue;
             }
 
-            let key = DataKey::Error(id.clone());
+            let key = DataKey::ErrorRecord(id.clone());
             let entry: Option<ErrorEntry> = env.storage().persistent().get(&key);
             match entry {
                 None => {
@@ -569,14 +598,14 @@ impl AgentRegistryContract {
         }
 
         if !all_ok || error_ids.is_empty() {
-            return results;
+            return Ok(results);
         }
 
         // ── Phase 2: commit ──────────────────────────────────────────────────
         let mut ttl_keys: Vec<DataKey> = Vec::new(&env);
         for i in 0..error_ids.len() {
             let id = error_ids.get(i).unwrap();
-            let key = DataKey::Error(id.clone());
+            let key = DataKey::ErrorRecord(id.clone());
             let mut entry: ErrorEntry = env.storage().persistent().get(&key).unwrap();
             entry.resolved = true;
             entry.resolution = resolution.clone();
@@ -585,12 +614,12 @@ impl AgentRegistryContract {
         }
         extend_ttl_batch(&env, &ttl_keys);
 
-        results
+        Ok(results)
     }
 
     /// Fetch a single error entry (for tests / off-chain indexing).
     pub fn get_error(env: Env, error_id: BytesN<32>) -> Option<ErrorEntry> {
-        env.storage().persistent().get(&DataKey::Error(error_id))
+        env.storage().persistent().get(&DataKey::ErrorRecord(error_id))
     }
 
     // ── Gas budget estimation ────────────────────────────────────────────────
@@ -631,11 +660,13 @@ impl AgentRegistryContract {
     }
 
     /// Override empirical gas parameters stored in instance config.
-    pub fn set_gas_config(env: Env, config: GasConfig) {
+    pub fn set_gas_config(env: Env, config: GasConfig) -> Result<(), Error> {
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::GasConfig, &config);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(())
     }
 
     /// Read the current gas configuration (defaults if never set).
@@ -823,7 +854,7 @@ mod test {
 
     #[test]
     fn set_admin_changes_admin() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let new_admin = Address::generate(&env);
         client.set_admin(&new_admin);
         assert_eq!(client.get_admin(), Some(new_admin));
@@ -845,7 +876,7 @@ mod test {
 
     #[test]
     fn pause_blocks_register_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "agent_p", "test", owner));
@@ -854,7 +885,7 @@ mod test {
 
     #[test]
     fn pause_blocks_deregister_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_d", "test", owner));
@@ -865,7 +896,7 @@ mod test {
 
     #[test]
     fn pause_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_u", "test", owner));
@@ -876,7 +907,7 @@ mod test {
 
     #[test]
     fn unpause_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         client.unpause();
         let owner = Address::generate(&env);
@@ -916,7 +947,7 @@ mod test {
 
     #[test]
     fn is_paused_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
+        let (_env, client, _admin) = setup_with_admin();
         assert!(!client.is_paused());
         client.pause();
         assert!(client.is_paused());
@@ -926,7 +957,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_f", "test", owner));
@@ -937,7 +968,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_register() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.freeze_agent(&Symbol::new(&env, "frozen_id"));
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "frozen_id", "test", owner));
@@ -946,14 +977,14 @@ mod test {
 
     #[test]
     fn unfreeze_agent_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_unf", "test", owner));
         client.freeze_agent(&Symbol::new(&env, "agent_unf"));
-        assert!(client.is_agent_frozen(Symbol::new(&env, "agent_unf")));
+        assert!(client.is_agent_frozen(&Symbol::new(&env, "agent_unf")));
         client.unfreeze_agent(&Symbol::new(&env, "agent_unf"));
-        assert!(!client.is_agent_frozen(Symbol::new(&env, "agent_unf")));
+        assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_unf")));
         client.update_pricing(&Symbol::new(&env, "agent_unf"), &333_i128);
         let results = client.lookup_agents(&Symbol::new(&env, "test"));
         assert_eq!(results.get(0).unwrap().price_stroops, 333);
@@ -989,12 +1020,12 @@ mod test {
 
     #[test]
     fn is_agent_frozen_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
-        assert!(!client.is_agent_frozen(Symbol::new(&env, "agent_state")));
+        let (env, client, _admin) = setup_with_admin();
+        assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.freeze_agent(&Symbol::new(&env, "agent_state"));
-        assert!(client.is_agent_frozen(Symbol::new(&env, "agent_state")));
+        assert!(client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.unfreeze_agent(&Symbol::new(&env, "agent_state"));
-        assert!(!client.is_agent_frozen(Symbol::new(&env, "agent_state")));
+        assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
     }
 
     // ── Batch registration ───────────────────────────────────────────────────
@@ -1081,10 +1112,11 @@ mod test {
     #[test]
     fn register_agents_duplicate_ids_in_batch() {
         let (env, client) = setup();
-        let owner = Address::generate(&env);
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
         let mut agents = Vec::new(&env);
-        agents.push_back(make_record(&env, "same", "research", owner.clone()));
-        agents.push_back(make_record(&env, "same", "coding", owner));
+        agents.push_back(make_record(&env, "same", "research", owner1));
+        agents.push_back(make_record(&env, "same", "coding", owner2));
 
         let results = client.register_agents(&agents);
         assert_eq!(
@@ -1115,7 +1147,7 @@ mod test {
 
     #[test]
     fn resolve_errors_batch_success() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 1);
         let id2 = error_id(&env, 2);
@@ -1143,7 +1175,7 @@ mod test {
 
     #[test]
     fn resolve_errors_partial_failure_is_atomic() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 10);
         let missing = error_id(&env, 99);
@@ -1168,7 +1200,7 @@ mod test {
 
     #[test]
     fn resolve_errors_already_resolved_fails_atomically() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 20);
         let id2 = error_id(&env, 21);
@@ -1195,6 +1227,63 @@ mod test {
 
         let e2 = client.get_error(&id2).unwrap();
         assert!(!e2.resolved);
+    }
+
+    #[test]
+    fn resolve_errors_requires_admin_auth() {
+        let env = Env::default();
+        let contract_id = env.register(AgentRegistryContract, ());
+        let client = AgentRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        let reporter = Address::generate(&env);
+        let id1 = error_id(&env, 40);
+        client.report_error(&id1, &reporter, &String::from_str(&env, "some error"));
+
+        let mut ids = Vec::new(&env);
+        ids.push_back(id1.clone());
+
+        // Test non-admin cannot resolve errors
+        env.mock_auths(&[]);
+        let result = client.try_resolve_errors(&ids, &Resolution::Fixed);
+        assert!(result.is_err());
+
+        // Test admin succeeds
+        env.mock_all_auths();
+        let result_admin = client.resolve_errors(&ids, &Resolution::Fixed);
+        assert_eq!(result_admin.get(0).unwrap(), VoidBatchResult::Ok);
+    }
+
+    #[test]
+    fn set_gas_config_requires_admin_auth() {
+        let env = Env::default();
+        let contract_id = env.register(AgentRegistryContract, ());
+        let client = AgentRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        let new_config = GasConfig {
+            tx_overhead: 10_000,
+            register_agent: 50_000,
+            register_agent_marginal: 20_000,
+            resolve_error: 25_000,
+            resolve_error_marginal: 15_000,
+        };
+
+        // Test non-admin cannot set gas config
+        env.mock_auths(&[]);
+        let result = client.try_set_gas_config(&new_config);
+        assert!(result.is_err());
+
+        // Test admin succeeds
+        env.mock_all_auths();
+        client.set_gas_config(&new_config);
+        assert_eq!(client.get_gas_config(), new_config);
     }
 
     // ── Gas estimation ───────────────────────────────────────────────────────
