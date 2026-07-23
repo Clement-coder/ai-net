@@ -29,8 +29,8 @@
 mod events;
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contractclient, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Symbol, Vec,
 };
 
 /// The subset of error-resolver's on-chain interface this contract calls.
@@ -1125,6 +1125,7 @@ mod test {
         assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_unf")));
         client.update_pricing(&Symbol::new(&env, "agent_unf"), &333_i128);
         let results = client.lookup_agents(&Symbol::new(&env, "test"));
+        assert_eq!(results.get(0).unwrap().price_stroops, 333);
     }
 
     #[test]
@@ -1272,6 +1273,7 @@ mod test {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn cross_contract_cascade_stays_within_conservative_budget() {
         // Measures the actual CPU/memory cost of the error-resolver
         // cross-contract calls (see docs/architecture.md for the numbers
@@ -1600,7 +1602,6 @@ mod test {
         let e2 = client.get_error(&id2).unwrap();
         assert!(!e2.resolved);
     }
-
 
     // ── Gas estimation ───────────────────────────────────────────────────────
 
