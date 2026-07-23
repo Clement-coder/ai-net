@@ -129,7 +129,9 @@ async function pollUntilStatus(
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await request(httpServer).get(`/api/tasks/${taskId}`);
+    const res = await request(httpServer)
+      .get(`/api/tasks/${taskId}`)
+      .set("walletpublickey", "GFAKEWALLETPUBLICKEY");
     if (res.status === 200 && res.body.status === targetStatus) {
       return res.body as Record<string, unknown>;
     }
@@ -261,7 +263,9 @@ describe('Full pipeline E2E', () => {
   }, 60_000);
 
   it('GET /api/tasks/:id returns 404 for unknown taskId', async () => {
-    const res = await request(httpServer).get('/api/tasks/task_doesnotexist');
+    const res = await request(httpServer)
+      .get('/api/tasks/task_doesnotexist')
+      .set('walletpublickey', 'GFAKEWALLETPUBLICKEY');
     expect(res.status).toBe(404);
   });
 
