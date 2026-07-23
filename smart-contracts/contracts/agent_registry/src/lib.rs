@@ -32,6 +32,8 @@
 //! Callers inspect the returned `Vec<BatchResult>` / `Vec<VoidBatchResult>`:
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
+mod events;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address,
     BytesN, Env, String, Symbol, Vec,

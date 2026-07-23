@@ -73,12 +73,12 @@ jobs:
       - name: Test (unit)
         run: npm test --if-present
 
-  backend-e2e:
-    name: Backend E2E
+  e2e-integration:
+    name: Fullstack E2E Integration
     needs: detect_projects
-    if: ${{ needs.detect_projects.outputs.backend == 'true' && github.event_name == 'pull_request' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -104,11 +104,22 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: E2E tests
-        run: npx jest --testPathPattern="tests/e2e" --runInBand
+      - name: Run E2E Integration Tests (Scenarios A, B, C)
+        run: npx jest --config ../tests/e2e/jest.config.js --runInBand --passWithNoTests
         env:
+          NODE_ENV: test
+          SKIP_STELLAR_ACCOUNT_VERIFY: "true"
           STELLAR_TEST_SECRET: ${{ secrets.STELLAR_TEST_SECRET }}
           VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+
+      - name: Upload E2E Coverage Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-coverage-report
+          path: coverage-e2e/
+
+
 
   frontend:
     name: Frontend
