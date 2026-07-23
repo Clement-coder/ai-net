@@ -11,8 +11,14 @@ import { createLogger } from "../../utils/logger";
 export function createTasksRouter(dispatch: DispatchFn, releasePayment: PaymentReleaseFn): Router {
   const tasksRouter = Router();
 
+// `maxBudgetXLM` and `walletPublicKey` are optional, matching the handler this
+// router replaced (previously inline in app.ts). The old contract only rejected
+// maxBudgetXLM when it was present and below the minimum, and accepted
+// walletPublicKey from the body; requiring them here silently broke every
+// caller that omitted them, including the e2e suite.
 const CreateTaskSchema = z.object({
   prompt: z.string().min(1),
+  walletPublicKey: z.string().optional(),
   maxBudgetXLM: z.number().min(0.1).optional().default(1),
   agentPreferences: z.array(z.string()).optional(),
 });
@@ -83,7 +89,12 @@ tasksRouter.post("/", (req: Request, res: Response): void => {
   }
 
   const { prompt } = parse.data;
-  const walletPublicKey = (req.headers["walletpublickey"] as string) ?? (req.body.walletPublicKey as string) ?? "";
+  // Body first, then the header, then "anonymous" — the precedence the
+  // previous app.ts handler used.
+  const walletPublicKey =
+    parse.data.walletPublicKey ??
+    (req.headers["walletpublickey"] as string | undefined) ??
+    "anonymous";
 
   const taskId = `task_${nanoid(12)}`;
   const dag = decompose(taskId, prompt);

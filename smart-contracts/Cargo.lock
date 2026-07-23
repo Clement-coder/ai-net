@@ -6,6 +6,7 @@ version = 4
 name = "agent-registry"
 version = "0.1.0"
 dependencies = [
+ "error-resolver",
  "soroban-sdk",
  "tokio",
 ]
@@ -556,6 +557,7 @@ name = "error-resolver"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "soroban-sdk",
  "toml",
 ]
 

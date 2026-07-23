@@ -33,7 +33,11 @@ import type { AgentResult } from '../../src/agents/research/types';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const PROMPT = 'Generate a market-entry report for solar energy in Southeast Asia with code implementation and UI design';
+// Exercises every branch of `decompose`: "market" -> risk, "software"/"implementation"
+// -> coding, "UI design" -> design. research and report are unconditional, so this
+// yields the full 5-node DAG this suite is built around.
+const PROMPT =
+  'Generate a market-entry report for solar energy in Southeast Asia, including software implementation and UI design';
 
 const REQUIRED_SECTIONS = [
   'Executive Summary',
