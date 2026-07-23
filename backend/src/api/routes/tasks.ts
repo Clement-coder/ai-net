@@ -229,6 +229,11 @@ tasksRouter.get("/:id", (req: Request, res: Response): void => {
     res.status(404).json({ error: "Task not found" });
     return;
   }
+  const requesterKey = req.headers["walletpublickey"] as string;
+  if (!requesterKey || requesterKey !== task.walletPublicKey) {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
   res.json(task);
 });
 
@@ -256,6 +261,12 @@ tasksRouter.get("/:id", (req: Request, res: Response): void => {
  *               properties:
  *                 taskId: { type: string }
  *                 status: { type: string, enum: [cancelled] }
+ *       403:
+ *         description: Not authorized to cancel this task
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       404:
  *         description: Task not found
  *         content:
@@ -263,7 +274,7 @@ tasksRouter.get("/:id", (req: Request, res: Response): void => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: Cannot cancel a running task
+ *         description: Cannot cancel task in current status
  *         content:
  *           application/json:
  *             schema:
@@ -277,10 +288,18 @@ tasksRouter.delete("/:id", (req: Request, res: Response): void => {
     res.status(404).json({ error: "Task not found" });
     return;
   }
-  if (task.status === "running") {
-    res.status(409).json({ error: "Cannot cancel a running task" });
+
+  const requesterKey = req.headers["walletpublickey"] as string;
+  if (!requesterKey || requesterKey !== task.walletPublicKey) {
+    res.status(403).json({ error: "Not authorized to cancel this task" });
     return;
   }
+
+  if (task.status !== "queued") {
+    res.status(409).json({ error: `Cannot cancel task in '${task.status}' status` });
+    return;
+  }
+
   db.updateStatus(req.params.id, "cancelled");
   res.json({ taskId: req.params.id, status: "cancelled" });
 });

@@ -74,23 +74,52 @@ describe("POST /api/tasks", () => {
 
 describe("GET /api/tasks/:id", () => {
   it("returns 404 for unknown ID", async () => {
-    const res = await request(app.httpServer).get(
-      "/api/tasks/task_doesnotexist",
-    );
+    const res = await request(app.httpServer)
+      .get("/api/tasks/task_doesnotexist")
+      .set("walletpublickey", WALLET);
     expect(res.status).toBe(404);
   });
 
-  it("returns task for known ID", async () => {
+  it("returns task for known ID (with correct wallet key)", async () => {
     const create = await request(app.httpServer)
       .post("/api/tasks")
       .set("walletpublickey", WALLET)
       .send({ prompt: "Research AI trends", maxBudgetXLM: 2 });
 
     const id = create.body.taskId;
-    const res = await request(app.httpServer).get(`/api/tasks/${id}`);
+    const res = await request(app.httpServer)
+      .get(`/api/tasks/${id}`)
+      .set("walletpublickey", WALLET);
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(id);
     expect(Array.isArray(res.body.dag)).toBe(true);
+  });
+
+  it("returns 403 when wrong wallet key is provided", async () => {
+    const create = await request(app.httpServer)
+      .post("/api/tasks")
+      .set("walletpublickey", WALLET)
+      .send({ prompt: "Research AI trends", maxBudgetXLM: 2 });
+
+    const id = create.body.taskId;
+    const res = await request(app.httpServer)
+      .get(`/api/tasks/${id}`)
+      .set("walletpublickey", "WRONG_WALLET_KEY");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Access denied");
+  });
+
+  it("returns 403 when wallet key header is missing", async () => {
+    const create = await request(app.httpServer)
+      .post("/api/tasks")
+      .set("walletpublickey", WALLET)
+      .send({ prompt: "Research AI trends", maxBudgetXLM: 2 });
+
+    const id = create.body.taskId;
+    const res = await request(app.httpServer)
+      .get(`/api/tasks/${id}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Access denied");
   });
 });
 
@@ -119,19 +148,48 @@ describe("GET /api/tasks (pagination)", () => {
 });
 
 describe("DELETE /api/tasks/:id", () => {
-  it("cancels a queued task", async () => {
+  it("cancels a queued task (with correct wallet key)", async () => {
     const create = await request(app.httpServer)
       .post("/api/tasks")
       .set("walletpublickey", WALLET)
       .send({ prompt: "Cancel me", maxBudgetXLM: 1 });
     const id = create.body.taskId;
 
-    const res = await request(app.httpServer).delete(`/api/tasks/${id}`);
+    const res = await request(app.httpServer)
+      .delete(`/api/tasks/${id}`)
+      .set("walletpublickey", WALLET);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
   });
 
-  it("returns 409 when task is running", async () => {
+  it("returns 403 when wrong wallet key tries to cancel", async () => {
+    const create = await request(app.httpServer)
+      .post("/api/tasks")
+      .set("walletpublickey", WALLET)
+      .send({ prompt: "Cancel me", maxBudgetXLM: 1 });
+    const id = create.body.taskId;
+
+    const res = await request(app.httpServer)
+      .delete(`/api/tasks/${id}`)
+      .set("walletpublickey", "WRONG_WALLET_KEY");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Not authorized to cancel this task");
+  });
+
+  it("returns 403 when wallet key header is missing on cancel", async () => {
+    const create = await request(app.httpServer)
+      .post("/api/tasks")
+      .set("walletpublickey", WALLET)
+      .send({ prompt: "Cancel me", maxBudgetXLM: 1 });
+    const id = create.body.taskId;
+
+    const res = await request(app.httpServer)
+      .delete(`/api/tasks/${id}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Not authorized to cancel this task");
+  });
+
+  it("returns 409 when task is not queued (e.g. running)", async () => {
     const create = await request(app.httpServer)
       .post("/api/tasks")
       .set("walletpublickey", WALLET)
@@ -141,14 +199,34 @@ describe("DELETE /api/tasks/:id", () => {
     // Manually set to running via DB
     createTaskDb(inMemoryDb).updateStatus(id, "running");
 
-    const res = await request(app.httpServer).delete(`/api/tasks/${id}`);
+    const res = await request(app.httpServer)
+      .delete(`/api/tasks/${id}`)
+      .set("walletpublickey", WALLET);
     expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot cancel task in 'running' status");
+  });
+
+  it("returns 409 when task is completed", async () => {
+    const create = await request(app.httpServer)
+      .post("/api/tasks")
+      .set("walletpublickey", WALLET)
+      .send({ prompt: "Completed task", maxBudgetXLM: 1 });
+    const id = create.body.taskId;
+
+    // Manually set to completed via DB
+    createTaskDb(inMemoryDb).updateStatus(id, "completed");
+
+    const res = await request(app.httpServer)
+      .delete(`/api/tasks/${id}`)
+      .set("walletpublickey", WALLET);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot cancel task in 'completed' status");
   });
 
   it("returns 404 for unknown task", async () => {
-    const res = await request(app.httpServer).delete(
-      "/api/tasks/task_unknown999",
-    );
+    const res = await request(app.httpServer)
+      .delete("/api/tasks/task_unknown999")
+      .set("walletpublickey", WALLET);
     expect(res.status).toBe(404);
   });
 });
