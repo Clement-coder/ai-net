@@ -13,7 +13,7 @@ export function createTasksRouter(dispatch: DispatchFn, releasePayment: PaymentR
 
 const CreateTaskSchema = z.object({
   prompt: z.string().min(1),
-  maxBudgetXLM: z.number().min(0.1),
+  maxBudgetXLM: z.number().min(0.1).optional().default(1),
   agentPreferences: z.array(z.string()).optional(),
 });
 
@@ -83,7 +83,7 @@ tasksRouter.post("/", (req: Request, res: Response): void => {
   }
 
   const { prompt } = parse.data;
-  const walletPublicKey = (req.headers["walletpublickey"] as string) ?? "";
+  const walletPublicKey = (req.headers["walletpublickey"] as string) ?? (req.body.walletPublicKey as string) ?? "";
 
   const taskId = `task_${nanoid(12)}`;
   const dag = decompose(taskId, prompt);

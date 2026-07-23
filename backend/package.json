@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node src/index.ts",
-    "test": "jest --testPathPattern=tests/ --runInBand"
+    "test": "jest --testPathPattern=tests --runInBand --forceExit"
   },
   "license": "MIT",
   "dependencies": {

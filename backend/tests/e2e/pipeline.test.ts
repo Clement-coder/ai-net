@@ -33,7 +33,7 @@ import type { AgentResult } from '../../src/agents/research/types';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const PROMPT = 'Generate a market-entry report for solar energy in Southeast Asia';
+const PROMPT = 'Generate a market-entry report for solar energy in Southeast Asia with code implementation and UI design';
 
 const REQUIRED_SECTIONS = [
   'Executive Summary',
@@ -175,6 +175,7 @@ describe('Full pipeline E2E', () => {
   it('POST /api/tasks returns 201 with taskId and 5-node dagPreview', async () => {
     const res = await request(httpServer)
       .post('/api/tasks')
+      .set('walletpublickey', 'GFAKEWALLETPUBLICKEY')
       .send({ prompt: PROMPT, walletPublicKey: 'GFAKEWALLETPUBLICKEY' });
 
     expect(res.status).toBe(201);

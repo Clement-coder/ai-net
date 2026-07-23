@@ -105,7 +105,7 @@ jobs:
         run: npm install
 
       - name: E2E tests
-        run: npx jest --testPathPattern="tests/e2e" --runInBand
+        run: npx jest --testPathPattern="tests/e2e" --runInBand --forceExit
         env:
           STELLAR_TEST_SECRET: ${{ secrets.STELLAR_TEST_SECRET }}
           VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}

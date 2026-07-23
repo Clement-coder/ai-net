@@ -29,7 +29,7 @@ import {
 } from '../fixtures/agentResults';
 import type { AgentResult } from '../../src/agents/research/types';
 
-const PROMPT = 'Generate a market-entry report for solar energy in Southeast Asia';
+const PROMPT = 'Generate a market-entry report for solar energy in Southeast Asia with code implementation and UI design';
 const OWNER = 'GOWNERWALLETPUBLICKEY';
 const NODE_IDS = ['node_research', 'node_risk', 'node_coding', 'node_design', 'node_report'];
 

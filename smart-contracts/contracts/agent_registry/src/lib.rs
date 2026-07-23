@@ -27,8 +27,7 @@
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
 
 // ─── Gas budget constants (empirical, CU / CPU instructions) ─────────────────
@@ -619,7 +618,9 @@ impl AgentRegistryContract {
 
     /// Fetch a single error entry (for tests / off-chain indexing).
     pub fn get_error(env: Env, error_id: BytesN<32>) -> Option<ErrorEntry> {
-        env.storage().persistent().get(&DataKey::ErrorRecord(error_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::ErrorRecord(error_id))
     }
 
     // ── Gas budget estimation ────────────────────────────────────────────────
