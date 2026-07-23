@@ -33,24 +33,9 @@
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address,
     BytesN, Env, String, Symbol, Vec,
 };
-
-/// The subset of error-resolver's on-chain interface this contract calls.
-///
-/// Declared here rather than importing `error_resolver::ErrorResolverContractClient`
-/// on purpose: depending on the resolver *crate* would link its `#[contractimpl]`
-/// into this contract's wasm, and both contracts export `initialize` and
-/// `get_admin`, so `rust-lld` fails the release build with duplicate symbols.
-/// A `#[contractclient]` generates the same `try_*` calling code from the
-/// signatures alone, with no link-time dependency. The real crate stays a
-/// dev-dependency so tests still exercise the genuine contract.
-#[contractclient(name = "ErrorResolverClient")]
-pub trait ErrorResolverInterface {
-    fn get_agent_error_count(env: Env, agent_id: Symbol) -> u32;
-    fn clear_agent_errors(env: Env, caller: Address, agent_id: Symbol);
-}
 
 // ─── Gas budget constants (empirical, CU / CPU instructions) ─────────────────
 // Stored as defaults in contract config; overridable via `set_gas_config`.
@@ -333,24 +318,6 @@ impl AgentRegistryContract {
         Ok(())
     }
 
-    /// Configures the error-resolver contract this registry cascades
-    /// `deregister_agent` cleanup and `get_agent_health` queries to. Admin
-    /// only, since it's a trust boundary: whichever contract is set here
-    /// is the one this registry calls on-chain.
-    pub fn set_error_resolver(env: Env, error_resolver: Address) -> Result<(), Error> {
-        require_admin(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::ErrorResolverContract, &error_resolver);
-        Ok(())
-    }
-
-    pub fn get_error_resolver(env: Env) -> Option<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::ErrorResolverContract)
-    }
-
     pub fn pause(env: Env) -> Result<(), Error> {
         require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -577,21 +544,6 @@ impl AgentRegistryContract {
         env.storage().persistent().set(&cap_key, &updated);
         env.storage().persistent().remove(&agent_key);
 
-        // Cascade to error-resolver so errors don't outlive the agent
-        // record. Best-effort: if error-resolver isn't configured, isn't
-        // reachable, or rejects the call, deregistration still succeeds —
-        // an orphaned error count is a cleanup nuisance, not a reason to
-        // block removing an agent.
-        if let Some(resolver) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::ErrorResolverContract)
-        {
-            let resolver_client = ErrorResolverClient::new(&env, &resolver);
-            let _ =
-                resolver_client.try_clear_agent_errors(&env.current_contract_address(), &agent_id);
-        }
-
         Ok(())
     }
 
@@ -609,19 +561,7 @@ impl AgentRegistryContract {
             .get(&DataKey::FrozenAgent(agent_id.clone()))
             .unwrap_or(false);
 
-        let error_count = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::ErrorResolverContract)
-            .map(|resolver| {
-                let resolver_client = ErrorResolverClient::new(&env, &resolver);
-                resolver_client
-                    .try_get_agent_error_count(&agent_id)
-                    .ok()
-                    .and_then(|inner| inner.ok())
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
+        let error_count = 0;
 
         AgentHealth {
             agent_id,
