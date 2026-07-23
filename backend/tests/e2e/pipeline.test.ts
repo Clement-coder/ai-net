@@ -14,6 +14,7 @@
  * the live testnet (requires STELLAR_TEST_SECRET in env).
  */
 
+import http from 'http';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'net';
@@ -275,4 +276,146 @@ describe('Full pipeline E2E', () => {
       .send({ walletPublicKey: 'GFAKE' });
     expect(res.status).toBe(400);
   });
+});
+
+// ─── HTTP Dispatch Integration ────────────────────────────────────────────────
+
+/**
+ * Verifies that the real `httpDispatch` path works end-to-end: spin up a
+ * minimal HTTP server that acts as a mock agent, wire it into `createApp` via
+ * the `agentRegistry` option, and confirm the task completes successfully.
+ */
+describe('HTTP dispatch integration (mock agent server)', () => {
+  let appServer: HttpServer;
+  let agentServer: http.Server;
+  let appBaseUrl: string;
+  let closeTestApp: () => void;
+
+  /** Tracks calls received by the mock agent server */
+  const agentCalls: Array<{ nodeId: string; nodeType: string }> = [];
+
+  beforeAll(done => {
+    agentCalls.length = 0;
+
+    // ── Minimal mock agent HTTP server ──────────────────────────────────────
+    // Responds to POST /execute with a fixture result keyed by node.type.
+    agentServer = http.createServer((req, res) => {
+      if (req.method !== 'POST' || req.url !== '/execute') {
+        res.writeHead(404).end();
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const { node } = JSON.parse(body) as { nodeId: string; node: { type: string; nodeId: string } };
+          agentCalls.push({ nodeId: node.nodeId, nodeType: node.type });
+
+          const fixture = fixtureByType[node.type] ?? { summary: `Result for ${node.type}` };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(fixture));
+        } catch {
+          res.writeHead(400).end(JSON.stringify({ error: 'bad request' }));
+        }
+      });
+    });
+
+    agentServer.listen(0, '127.0.0.1', () => {
+      const agentAddr = agentServer.address() as AddressInfo;
+      const agentEndpoint = `http://127.0.0.1:${agentAddr.port}`;
+
+      // ── AgentRegistry backed by mock agent server ───────────────────────
+      const agentRegistry = {
+        getAgents: (agentType: string) => [
+          { id: `mock-${agentType}`, type: agentType, endpoint: agentEndpoint, cost: 1 },
+        ],
+      };
+
+      // ── Create app with registry and no custom dispatch ─────────────────
+      const { httpServer: srv, close } = createApp({
+        agentRegistry,
+        releasePayment: mockReleasePayment,
+      });
+
+      appServer = srv;
+      closeTestApp = close;
+
+      appServer.listen(0, '127.0.0.1', () => {
+        const appAddr = appServer.address() as AddressInfo;
+        appBaseUrl = `http://127.0.0.1:${appAddr.port}`;
+        done();
+      });
+    });
+  }, 15_000);
+
+  afterAll(done => {
+    closeTestApp();
+    agentServer.close(done);
+  });
+
+  it('submits a task and all nodes complete via real HTTP dispatch', async () => {
+    // POST task
+    const postRes = await request(appServer)
+      .post('/api/tasks')
+      .send({ prompt: PROMPT, walletPublicKey: 'GFAKEWALLETPUBLICKEY' });
+
+    expect(postRes.status).toBe(201);
+    const { taskId } = postRes.body as { taskId: string };
+    expect(taskId).toMatch(/^task_/);
+
+    // Poll until completed
+    const deadline = Date.now() + 120_000;
+    let finalTask: Record<string, unknown> | null = null;
+
+    while (Date.now() < deadline) {
+      const getRes = await request(appServer).get(`/api/tasks/${taskId}`);
+      if (getRes.status === 200 && getRes.body.status === 'completed') {
+        finalTask = getRes.body as Record<string, unknown>;
+        break;
+      }
+      if (getRes.body.status === 'failed') {
+        throw new Error(`Task failed unexpectedly: ${JSON.stringify(getRes.body)}`);
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    expect(finalTask).not.toBeNull();
+    expect(finalTask!.status).toBe('completed');
+
+    // All 5 nodes should be completed
+    const dag = finalTask!.dag as Array<{ nodeId: string; status: string }>;
+    for (const nodeId of AGENT_NODE_IDS) {
+      const node = dag.find(n => n.nodeId === nodeId);
+      expect(node).toBeDefined();
+      expect(node!.status).toBe('completed');
+    }
+
+    // Agent server should have received one request per node
+    expect(agentCalls.length).toBeGreaterThanOrEqual(AGENT_NODE_IDS.length);
+  }, 130_000);
+
+  it('returns an error when no agent registry is configured and no dispatch provided', async () => {
+    const { httpServer: bareServer, close } = createApp({ releasePayment: mockReleasePayment });
+    await new Promise<void>(resolve => bareServer.listen(0, '127.0.0.1', resolve));
+
+    const postRes = await request(bareServer)
+      .post('/api/tasks')
+      .send({ prompt: PROMPT, walletPublicKey: 'GFAKEWALLETPUBLICKEY' });
+
+    expect(postRes.status).toBe(201);
+    const { taskId } = postRes.body as { taskId: string };
+
+    // Task should eventually fail because no registry/dispatch is available
+    const deadline = Date.now() + 15_000;
+    let status = 'queued';
+    while (Date.now() < deadline && status !== 'failed') {
+      await new Promise(r => setTimeout(r, 100));
+      const getRes = await request(bareServer).get(`/api/tasks/${taskId}`);
+      status = (getRes.body as { status: string }).status;
+    }
+
+    expect(status).toBe('failed');
+    close();
+  }, 20_000);
 });

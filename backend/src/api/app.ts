@@ -7,6 +7,8 @@ import {
   type DispatchFn,
   type PaymentReleaseFn,
 } from "../coordinator/coordinator";
+import { httpDispatch } from "../coordinator/dispatch";
+import type { AgentRegistry } from "../types/agent";
 import { getTask } from "../coordinator/taskStore";
 import { eventBus } from "../coordinator/eventBus";
 import { createEventStore, type EventStore } from "../coordinator/eventStore";
@@ -31,7 +33,7 @@ import { createTaskDb, getTaskDb } from "../db/tasks";
 import { openapiSpec } from "./docs/openapi";
 
 export interface AppOptions {
-  /** Called to execute a single DAG node; defaults to HTTP dispatch */
+  /** Called to execute a single DAG node; defaults to HTTP dispatch via agent registry */
   dispatch?: DispatchFn;
   /** Called after each node completes; defaults to no-op (returns 'mock-hash') */
   releasePayment?: PaymentReleaseFn;
@@ -39,6 +41,11 @@ export interface AppOptions {
   eventStore?: EventStore;
   /** Heartbeat / auth timing for the WebSocket stream */
   stream?: TaskStreamOptions;
+  /**
+   * Agent registry used to resolve endpoint URLs for HTTP dispatch.
+   * Required when `dispatch` is not provided; ignored when `dispatch` is set.
+   */
+  agentRegistry?: AgentRegistry;
 }
 
 /**
@@ -74,7 +81,7 @@ export function createApp(opts: AppOptions = {}): {
   app.use(requestId);
   app.use(requestLogger);
 
-  const dispatch: DispatchFn = opts.dispatch ?? defaultDispatch;
+  const dispatch: DispatchFn = opts.dispatch ?? makeHttpDispatch(opts.agentRegistry);
   const releasePayment: PaymentReleaseFn =
     opts.releasePayment ?? createPaymentReleaseFn(tryLoadStellarRelease());
 
@@ -130,12 +137,29 @@ export function createApp(opts: AppOptions = {}): {
   return { httpServer, close };
 }
 
-async function defaultDispatch(
-  taskId: string,
-  node: DAGNode,
-  context: string,
-): Promise<unknown> {
-  // In production this POSTs to the agent's HTTP endpoint.
-  // The e2e test replaces this via opts.dispatch.
-  throw new Error(`No agent registered for type: ${node.type}`);
+/**
+ * Build a DispatchFn that looks up the cheapest agent for a node's type in the
+ * provided registry and forwards the call to that agent via HTTP.
+ *
+ * If no registry is provided (e.g. during tests that supply their own dispatch)
+ * the returned function throws a clear error so misconfiguration is obvious at
+ * runtime rather than producing a silent no-op.
+ */
+function makeHttpDispatch(registry?: AgentRegistry): DispatchFn {
+  return async (taskId: string, node: DAGNode, context: string): Promise<unknown> => {
+    if (!registry) {
+      throw new Error(
+        `No agent registry configured. Provide agentRegistry in AppOptions or supply a custom dispatch function.`,
+      );
+    }
+
+    const agents = await registry.getAgents(node.type);
+    if (!agents || agents.length === 0) {
+      throw new Error(`No agent registered for type: ${node.type}`);
+    }
+
+    // Pick cheapest available agent.
+    const agent = [...agents].sort((a, b) => a.cost - b.cost)[0];
+    return httpDispatch(agent, node.nodeId, node, context);
+  };
 }
