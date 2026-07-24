@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactFlow, { Background, Controls, ConnectionLineType, Edge, MarkerType, Node, Position, Handle } from 'reactflow';
+import ReactFlow, { Background, Controls, ConnectionLineType, Edge, MarkerType, Node, NodeProps, Position, Handle } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { DagEdge, DagNode } from '../../services/taskService';
 
@@ -10,7 +10,11 @@ export type DAGPreviewProps = {
   };
 };
 
-const PreviewNode = ({ id, data }: any) => {
+interface PreviewNodeData {
+  label: string;
+}
+
+const PreviewNode = ({ id, data }: NodeProps<PreviewNodeData>) => {
   return (
     <div id={id} className="dag-node p-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 min-w-[140px] text-center font-semibold shadow-md">
       <Handle type="target" position={Position.Left} style={{ background: '#475569', width: 6, height: 6 }} />
