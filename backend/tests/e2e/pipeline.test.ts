@@ -370,7 +370,9 @@ describe('HTTP dispatch integration (mock agent server)', () => {
     let finalTask: Record<string, unknown> | null = null;
 
     while (Date.now() < deadline) {
-      const getRes = await request(appServer).get(`/api/tasks/${taskId}`);
+      const getRes = await request(appServer)
+        .get(`/api/tasks/${taskId}`)
+        .set('walletpublickey', 'GFAKEWALLETPUBLICKEY');
       if (getRes.status === 200 && getRes.body.status === 'completed') {
         finalTask = getRes.body as Record<string, unknown>;
         break;
@@ -412,7 +414,9 @@ describe('HTTP dispatch integration (mock agent server)', () => {
     let status = 'queued';
     while (Date.now() < deadline && status !== 'failed') {
       await new Promise(r => setTimeout(r, 100));
-      const getRes = await request(bareServer).get(`/api/tasks/${taskId}`);
+      const getRes = await request(bareServer)
+        .get(`/api/tasks/${taskId}`)
+        .set('walletpublickey', 'GFAKEWALLETPUBLICKEY');
       status = (getRes.body as { status: string }).status;
     }
 
