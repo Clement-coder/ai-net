@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAgents } from '../services/api'
 import type { AgentRecord } from '../types/api'
-import { normalizeAgent } from '../utils/agentRegistry'
+import { normalizeAgent } from '@utils/agentRegistry'
 
 const REFRESH_INTERVAL = 30_000
 
