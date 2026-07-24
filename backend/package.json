@@ -7,8 +7,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node src/index.ts",
-    "test": "jest --testPathPattern=tests/ --runInBand",
-    "test:e2e": "jest --config ../tests/e2e/jest.config.js --runInBand"
+    "test": "jest --testPathPattern=tests --runInBand --forceExit",
+    "test:e2e": "jest --config ../tests/e2e/jest.config.js --runInBand --forceExit"
   },
   "license": "MIT",
   "dependencies": {

@@ -132,18 +132,18 @@ export function createE2ETestKeypair(): E2EKeypair {
           const signFn = (kp as any).sign;
           if (typeof signFn === "function") {
             const res = signFn.call(kp, data);
-            return Buffer.isBuffer(res) ? res : Buffer.from(data);
+            return Buffer.isBuffer(res) ? res : data;
           }
-          return Buffer.from(data);
+          return data;
         } catch {
-          return Buffer.from(data);
+          return data;
         }
       }
     };
   } catch {
     return {
       publicKey: () => "GCOORDINATOR",
-      sign: (data: Buffer) => Buffer.from(data)
+      sign: (data: Buffer) => data
     };
   }
 }

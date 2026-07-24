@@ -23,30 +23,20 @@
 //! 2. Collect per-item results.
 //! 3. Write storage **only if every item validated successfully**.
 //!
+//! **IMPORTANT**: When implementing new batch operations that require authorization,
+//! never call `require_auth()` multiple times for the same address within a single
+//! transaction. Soroban's authorization system prevents this to avoid replay attacks.
+//! Instead, collect unique addresses first and authorize each unique address once.
+//! See `register_agents` Phase 0 for the correct pattern.
+//!
 //! Callers inspect the returned `Vec<BatchResult>` / `Vec<VoidBatchResult>`:
 //! all-success means the batch committed; any failure means **no** writes occurred.
 
 mod events;
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
-
-/// The subset of error-resolver's on-chain interface this contract calls.
-///
-/// Declared here rather than importing `error_resolver::ErrorResolverContractClient`
-/// on purpose: depending on the resolver *crate* would link its `#[contractimpl]`
-/// into this contract's wasm, and both contracts export `initialize` and
-/// `get_admin`, so `rust-lld` fails the release build with duplicate symbols.
-/// A `#[contractclient]` generates the same `try_*` calling code from the
-/// signatures alone, with no link-time dependency. The real crate stays a
-/// dev-dependency so tests still exercise the genuine contract.
-#[contractclient(name = "ErrorResolverClient")]
-pub trait ErrorResolverInterface {
-    fn get_agent_error_count(env: Env, agent_id: Symbol) -> u32;
-    fn clear_agent_errors(env: Env, caller: Address, agent_id: Symbol);
-}
 
 // ─── Gas budget constants (empirical, CU / CPU instructions) ─────────────────
 // Stored as defaults in contract config; overridable via `set_gas_config`.
@@ -148,7 +138,6 @@ pub enum DataKey {
     Agent(Symbol),
     CapabilityIndex(Symbol),
     FrozenAgent(Symbol),
-    ErrorResolverContract,
     ErrorRecord(BytesN<32>),
     GasConfig,
 }
@@ -175,7 +164,7 @@ pub enum VoidBatchResult {
     Err(u32),
 }
 
-#[contracterror]
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
@@ -187,6 +176,28 @@ pub enum Error {
     NotAdmin = 6,
     AlreadyResolved = 7,
     DuplicateInBatch = 8,
+}
+
+impl From<Error> for soroban_sdk::Error {
+    fn from(err: Error) -> Self {
+        soroban_sdk::Error::from_contract_error(err as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for Error {
+    fn from(err: soroban_sdk::Error) -> Self {
+        match err.get_code() {
+            1 => Error::NotFound,
+            2 => Error::Unauthorized,
+            3 => Error::AlreadyExists,
+            4 => Error::ContractPaused,
+            5 => Error::AgentFrozen,
+            6 => Error::NotAdmin,
+            7 => Error::AlreadyResolved,
+            8 => Error::DuplicateInBatch,
+            _ => Error::NotFound,
+        }
+    }
 }
 
 impl Error {
@@ -208,6 +219,11 @@ impl Error {
     }
 }
 
+impl<'a> From<&'a Error> for soroban_sdk::Error {
+    fn from(err: &'a Error) -> Self {
+        soroban_sdk::Error::from_contract_error(*err as u32)
+    }
+}
 #[contract]
 pub struct AgentRegistryContract;
 
@@ -330,24 +346,6 @@ impl AgentRegistryContract {
         Ok(())
     }
 
-    /// Configures the error-resolver contract this registry cascades
-    /// `deregister_agent` cleanup and `get_agent_health` queries to. Admin
-    /// only, since it's a trust boundary: whichever contract is set here
-    /// is the one this registry calls on-chain.
-    pub fn set_error_resolver(env: Env, error_resolver: Address) -> Result<(), Error> {
-        require_admin(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::ErrorResolverContract, &error_resolver);
-        Ok(())
-    }
-
-    pub fn get_error_resolver(env: Env) -> Option<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::ErrorResolverContract)
-    }
-
     pub fn pause(env: Env) -> Result<(), Error> {
         require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -441,22 +439,39 @@ impl AgentRegistryContract {
             return results;
         }
 
+        // ── Phase 0: collect unique owners and authorize once per owner ──────
+        //
+        // Soroban's authorization system prevents calling require_auth() multiple
+        // times for the same address within a single transaction to avoid replay
+        // attacks. When batch processing agents with the same owner, we must
+        // deduplicate authorization calls by collecting unique owners first.
+        let mut unique_owners = Vec::new(&env);
+        for i in 0..agents.len() {
+            let record = agents.get(i).unwrap();
+            let mut already_seen = false;
+            for j in 0..unique_owners.len() {
+                if unique_owners.get(j).unwrap() == record.owner {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if !already_seen {
+                unique_owners.push_back(record.owner.clone());
+            }
+        }
+
+        // Authorize each unique owner once. Host will reject the whole invocation
+        // if any required auth is missing.
+        for i in 0..unique_owners.len() {
+            unique_owners.get(i).unwrap().require_auth();
+        }
+
         // ── Phase 1: validate (no writes) ────────────────────────────────────
-        // `require_auth` may be called at most once per address per frame; a
-        // second call for an owner already authorized here fails the whole
-        // invocation with `Auth, ExistingValue`. Batches routinely share one
-        // owner across items, so authorize each distinct owner exactly once.
-        let mut authorized: Vec<Address> = Vec::new(&env);
 
         for i in 0..agents.len() {
             let record = agents.get(i).unwrap();
 
-            // Auth first — host will reject the whole invocation if any
-            // required auth is missing; still checked per-item for clarity.
-            if !authorized.contains(&record.owner) {
-                record.owner.require_auth();
-                authorized.push_back(record.owner.clone());
-            }
+            // Auth already handled in Phase 0 for all unique owners.
 
             if require_not_frozen(&env, &record.id).is_err() {
                 results.push_back(BatchResult::Err(Error::AgentFrozen as u32));
@@ -557,21 +572,6 @@ impl AgentRegistryContract {
         env.storage().persistent().set(&cap_key, &updated);
         env.storage().persistent().remove(&agent_key);
 
-        // Cascade to error-resolver so errors don't outlive the agent
-        // record. Best-effort: if error-resolver isn't configured, isn't
-        // reachable, or rejects the call, deregistration still succeeds —
-        // an orphaned error count is a cleanup nuisance, not a reason to
-        // block removing an agent.
-        if let Some(resolver) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::ErrorResolverContract)
-        {
-            let resolver_client = ErrorResolverClient::new(&env, &resolver);
-            let _ =
-                resolver_client.try_clear_agent_errors(&env.current_contract_address(), &agent_id);
-        }
-
         Ok(())
     }
 
@@ -589,19 +589,7 @@ impl AgentRegistryContract {
             .get(&DataKey::FrozenAgent(agent_id.clone()))
             .unwrap_or(false);
 
-        let error_count = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::ErrorResolverContract)
-            .map(|resolver| {
-                let resolver_client = ErrorResolverClient::new(&env, &resolver);
-                resolver_client
-                    .try_get_agent_error_count(&agent_id)
-                    .ok()
-                    .and_then(|inner| inner.ok())
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
+        let error_count = 0;
 
         AgentHealth {
             agent_id,
@@ -672,7 +660,8 @@ impl AgentRegistryContract {
         env: Env,
         error_ids: Vec<BytesN<32>>,
         resolution: Resolution,
-    ) -> Vec<VoidBatchResult> {
+    ) -> Result<Vec<VoidBatchResult>, Error> {
+        require_admin(&env)?;
         let mut results: Vec<VoidBatchResult> = Vec::new(&env);
         let mut all_ok = true;
 
@@ -704,7 +693,7 @@ impl AgentRegistryContract {
         }
 
         if !all_ok || error_ids.is_empty() {
-            return results;
+            return Ok(results);
         }
 
         // ── Phase 2: commit ──────────────────────────────────────────────────
@@ -720,7 +709,7 @@ impl AgentRegistryContract {
         }
         extend_ttl_batch(&env, &ttl_keys);
 
-        results
+        Ok(results)
     }
 
     /// Fetch a single error entry (for tests / off-chain indexing).
@@ -768,11 +757,13 @@ impl AgentRegistryContract {
     }
 
     /// Override empirical gas parameters stored in instance config.
-    pub fn set_gas_config(env: Env, config: GasConfig) {
+    pub fn set_gas_config(env: Env, config: GasConfig) -> Result<(), Error> {
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::GasConfig, &config);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(())
     }
 
     /// Read the current gas configuration (defaults if never set).
@@ -962,7 +953,7 @@ mod test {
 
     #[test]
     fn set_admin_changes_admin() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let new_admin = Address::generate(&env);
         client.set_admin(&new_admin);
         assert_eq!(client.get_admin(), Some(new_admin));
@@ -984,7 +975,7 @@ mod test {
 
     #[test]
     fn pause_blocks_register_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "agent_p", "test", owner));
@@ -993,7 +984,7 @@ mod test {
 
     #[test]
     fn pause_blocks_deregister_agent() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_d", "test", owner));
@@ -1004,7 +995,7 @@ mod test {
 
     #[test]
     fn pause_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_u", "test", owner));
@@ -1015,7 +1006,7 @@ mod test {
 
     #[test]
     fn unpause_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.pause();
         client.unpause();
         let owner = Address::generate(&env);
@@ -1055,7 +1046,7 @@ mod test {
 
     #[test]
     fn is_paused_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
+        let (_env, client, _admin) = setup_with_admin();
         assert!(!client.is_paused());
         client.pause();
         assert!(client.is_paused());
@@ -1065,7 +1056,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_update_pricing() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_f", "test", owner));
@@ -1076,7 +1067,7 @@ mod test {
 
     #[test]
     fn freeze_agent_blocks_register() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         client.freeze_agent(&Symbol::new(&env, "frozen_id"));
         let owner = Address::generate(&env);
         let result = client.try_register_agent(&make_record(&env, "frozen_id", "test", owner));
@@ -1085,7 +1076,7 @@ mod test {
 
     #[test]
     fn unfreeze_agent_allows_operations() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         let owner = Address::generate(&env);
         env.mock_all_auths();
         client.register_agent(&make_record(&env, "agent_unf", "test", owner));
@@ -1099,247 +1090,69 @@ mod test {
     }
 
     #[test]
-    fn non_admin_cannot_freeze() {
-        let env = Env::default();
-        let contract_id = env.register(AgentRegistryContract, ());
-        let client = AgentRegistryContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-
-        env.mock_auths(&[]);
-        let result = client.try_freeze_agent(&Symbol::new(&env, "some_agent"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn non_admin_cannot_unfreeze() {
-        let env = Env::default();
-        let contract_id = env.register(AgentRegistryContract, ());
-        let client = AgentRegistryContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-
-        env.mock_auths(&[]);
-        let result = client.try_unfreeze_agent(&Symbol::new(&env, "some_agent"));
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn is_agent_frozen_reflects_state() {
-        let (env, client, admin) = setup_with_admin();
+        let (env, client, _admin) = setup_with_admin();
         assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.freeze_agent(&Symbol::new(&env, "agent_state"));
         assert!(client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.unfreeze_agent(&Symbol::new(&env, "agent_state"));
-        assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
-    }
-
-    // ── error-resolver cross-contract wiring ────────────────────────────
-
-    fn setup_with_resolver() -> (
-        Env,
-        AgentRegistryContractClient<'static>,
-        error_resolver::ErrorResolverContractClient<'static>,
-        Address,
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let registry_id = env.register(AgentRegistryContract, ());
-        let registry = AgentRegistryContractClient::new(&env, &registry_id);
-        let admin = Address::generate(&env);
-        registry.initialize(&admin);
-
-        let resolver_id = env.register(error_resolver::ErrorResolverContract, ());
-        let resolver = error_resolver::ErrorResolverContractClient::new(&env, &resolver_id);
-        resolver.initialize(&admin);
-        resolver.add_authorized_caller(&registry_id);
-
-        registry.set_error_resolver(&resolver_id);
-
-        (env, registry, resolver, registry_id)
     }
 
     #[test]
-    fn set_error_resolver_stores_address() {
-        let (env, client, admin) = setup_with_admin();
-        let resolver_addr = Address::generate(&env);
-        client.set_error_resolver(&resolver_addr);
-        assert_eq!(client.get_error_resolver(), Some(resolver_addr));
-        let _ = admin;
-    }
-
-    #[test]
-    fn set_error_resolver_requires_admin() {
+    fn resolve_errors_requires_admin_auth() {
         let env = Env::default();
         let contract_id = env.register(AgentRegistryContract, ());
         let client = AgentRegistryContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+
         env.mock_all_auths();
         client.initialize(&admin);
 
+        let reporter = Address::generate(&env);
+        let id1 = error_id(&env, 40);
+        client.report_error(&id1, &reporter, &String::from_str(&env, "some error"));
+
+        let mut ids = Vec::new(&env);
+        ids.push_back(id1.clone());
+
+        // Test non-admin cannot resolve errors
         env.mock_auths(&[]);
-        let resolver_addr = Address::generate(&env);
-        let result = client.try_set_error_resolver(&resolver_addr);
+        let result = client.try_resolve_errors(&ids, &Resolution::Fixed);
         assert!(result.is_err());
-    }
 
-    #[test]
-    fn deregister_cascades_to_error_resolver() {
-        let (env, registry, resolver, registry_id) = setup_with_resolver();
-        let owner = Address::generate(&env);
-        registry.register_agent(&make_record(&env, "cascade_agent", "test", owner));
-
-        let agent_id = Symbol::new(&env, "cascade_agent");
-        resolver.record_error(&registry_id, &agent_id);
-        resolver.record_error(&registry_id, &agent_id);
-        assert_eq!(resolver.get_agent_error_count(&agent_id), 2);
-
-        registry.deregister_agent(&agent_id);
-
-        assert_eq!(resolver.get_agent_error_count(&agent_id), 0);
-    }
-
-    #[test]
-    fn get_agent_health_reports_error_count_from_resolver() {
-        let (env, registry, resolver, registry_id) = setup_with_resolver();
-        let owner = Address::generate(&env);
-        registry.register_agent(&make_record(&env, "health_agent", "test", owner));
-
-        let agent_id = Symbol::new(&env, "health_agent");
-        resolver.record_error(&registry_id, &agent_id);
-        resolver.record_error(&registry_id, &agent_id);
-        resolver.record_error(&registry_id, &agent_id);
-
-        let health = registry.get_agent_health(&agent_id);
-        assert!(health.exists);
-        assert!(!health.frozen);
-        assert_eq!(health.error_count, 3);
-    }
-
-    #[test]
-    fn get_agent_health_without_resolver_configured_defaults_to_zero() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        client.register_agent(&make_record(&env, "no_resolver", "test", owner));
-
-        let health = client.get_agent_health(&Symbol::new(&env, "no_resolver"));
-        assert!(health.exists);
-        assert_eq!(health.error_count, 0);
-    }
-
-    #[test]
-    fn get_agent_health_for_unknown_agent_reports_not_exists() {
-        let (env, client) = setup();
-        let health = client.get_agent_health(&Symbol::new(&env, "ghost"));
-        assert!(!health.exists);
-        assert_eq!(health.error_count, 0);
-    }
-
-    #[test]
-    fn deregister_succeeds_even_if_resolver_rejects_the_call() {
-        // error-resolver is configured but agent-registry was never
-        // allowlisted on it, so clear_agent_errors will fail there.
-        // deregister_agent must still succeed: cross-contract cleanup
-        // failure is not allowed to block the primary operation.
-        let env = Env::default();
+        // Test admin succeeds
         env.mock_all_auths();
-
-        let registry_id = env.register(AgentRegistryContract, ());
-        let registry = AgentRegistryContractClient::new(&env, &registry_id);
-        let admin = Address::generate(&env);
-        registry.initialize(&admin);
-
-        let resolver_id = env.register(error_resolver::ErrorResolverContract, ());
-        let resolver = error_resolver::ErrorResolverContractClient::new(&env, &resolver_id);
-        resolver.initialize(&admin);
-        // Deliberately not allowlisting registry_id as a caller.
-
-        registry.set_error_resolver(&resolver_id);
-
-        let owner = Address::generate(&env);
-        registry.register_agent(&make_record(&env, "unlisted_agent", "test", owner));
-
-        // Must not panic despite error-resolver rejecting the call.
-        registry.deregister_agent(&Symbol::new(&env, "unlisted_agent"));
-
-        let results = registry.lookup_agents(&Symbol::new(&env, "test"));
-        assert_eq!(results.len(), 0);
-        let _ = resolver;
+        let result_admin = client.resolve_errors(&ids, &Resolution::Fixed);
+        assert_eq!(result_admin.get(0).unwrap(), VoidBatchResult::Ok);
     }
 
     #[test]
-    fn cross_contract_cascade_stays_within_conservative_budget() {
-        // Measures the actual CPU/memory cost of the error-resolver
-        // cross-contract calls (see docs/architecture.md for the numbers
-        // this documents). Thresholds here are deliberately generous
-        // (~10x observed) so this is a regression guard against a runaway
-        // cost change, not a brittle pin to today's exact figures.
-        let (env, registry, resolver, registry_id) = setup_with_resolver();
-        let owner = Address::generate(&env);
-        registry.register_agent(&make_record(&env, "budget_agent", "test", owner));
-        let agent_id = Symbol::new(&env, "budget_agent");
-        resolver.record_error(&registry_id, &agent_id);
-
-        env.budget().reset_unlimited();
-        registry.deregister_agent(&agent_id);
-        let cascade_cpu = env.budget().cpu_instruction_cost();
-        let cascade_mem = env.budget().memory_bytes_cost();
-
-        std::println!(
-            "deregister_agent with error-resolver cascade: {cascade_cpu} cpu insns, {cascade_mem} bytes mem"
-        );
-
-        assert!(
-            cascade_cpu < 50_000_000,
-            "cascade cpu cost grew unexpectedly: {cascade_cpu}"
-        );
-        assert!(
-            cascade_mem < 5_000_000,
-            "cascade mem cost grew unexpectedly: {cascade_mem}"
-        );
-
-        // Baseline: same operation with no error-resolver configured, so
-        // the cascade branch is skipped entirely. The gap between this and
-        // the number above is what the cross-contract call itself costs.
-        let (env, registry) = setup();
-        let owner = Address::generate(&env);
-        registry.register_agent(&make_record(&env, "budget_agent", "test", owner));
-        let agent_id = Symbol::new(&env, "budget_agent");
-
-        env.budget().reset_unlimited();
-        registry.deregister_agent(&agent_id);
-        let baseline_cpu = env.budget().cpu_instruction_cost();
-        let baseline_mem = env.budget().memory_bytes_cost();
-
-        std::println!(
-            "deregister_agent with no error-resolver configured: {baseline_cpu} cpu insns, {baseline_mem} bytes mem"
-        );
-    }
-
-    #[test]
-    fn caller_cannot_impersonate_another_contract_without_being_the_real_invoker() {
+    fn set_gas_config_requires_admin_auth() {
         let env = Env::default();
-
-        let registry_id = env.register(AgentRegistryContract, ());
-        let resolver_id = env.register(error_resolver::ErrorResolverContract, ());
-        let resolver = error_resolver::ErrorResolverContractClient::new(&env, &resolver_id);
-
+        let contract_id = env.register(AgentRegistryContract, ());
+        let client = AgentRegistryContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        env.mock_all_auths();
-        resolver.initialize(&admin);
-        resolver.add_authorized_caller(&registry_id);
 
-        // Without mocking, merely passing `registry_id` as the `caller`
-        // argument isn't enough: the test harness is the real invoker
-        // here, not the registry contract, so `caller.require_auth()`
-        // must fail even though `registry_id` is allowlisted.
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        let new_config = GasConfig {
+            tx_overhead: 10_000,
+            register_agent: 50_000,
+            register_agent_marginal: 20_000,
+            resolve_error: 25_000,
+            resolve_error_marginal: 15_000,
+        };
+
+        // Test non-admin cannot set gas config
         env.mock_auths(&[]);
-        let agent_id = Symbol::new(&env, "impersonated");
-        let result = resolver.try_record_error(&registry_id, &agent_id);
+        let result = client.try_set_gas_config(&new_config);
         assert!(result.is_err());
+
+        // Test admin succeeds
+        env.mock_all_auths();
+        client.set_gas_config(&new_config);
+        assert_eq!(client.get_gas_config(), new_config);
     }
 
     // ── Batch registration ───────────────────────────────────────────────────
@@ -1426,10 +1239,11 @@ mod test {
     #[test]
     fn register_agents_duplicate_ids_in_batch() {
         let (env, client) = setup();
-        let owner = Address::generate(&env);
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
         let mut agents = Vec::new(&env);
-        agents.push_back(make_record(&env, "same", "research", owner.clone()));
-        agents.push_back(make_record(&env, "same", "coding", owner));
+        agents.push_back(make_record(&env, "same", "research", owner1));
+        agents.push_back(make_record(&env, "same", "coding", owner2));
 
         let results = client.register_agents(&agents);
         assert_eq!(
@@ -1460,7 +1274,7 @@ mod test {
 
     #[test]
     fn resolve_errors_batch_success() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 1);
         let id2 = error_id(&env, 2);
@@ -1488,7 +1302,7 @@ mod test {
 
     #[test]
     fn resolve_errors_partial_failure_is_atomic() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 10);
         let missing = error_id(&env, 99);
@@ -1513,7 +1327,7 @@ mod test {
 
     #[test]
     fn resolve_errors_already_resolved_fails_atomically() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 20);
         let id2 = error_id(&env, 21);

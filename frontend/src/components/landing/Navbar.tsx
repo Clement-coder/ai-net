@@ -177,6 +177,7 @@ const Navbar: React.FC = () => {
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.97 }}
+              onClick={() => navigate('/wallet')}
               className="group flex items-center gap-1.5 bg-background-surface/40 border border-border-subtle/60 rounded-md px-2.5 py-1 cursor-pointer hover:border-accent-cyan/30 hover:bg-background-surface/70 hover:shadow-[0_0_12px_rgba(56,189,248,0.04)] transition-all"
             >
               <Wallet size={12} className="text-accent-cyan/80 group-hover:text-accent-cyan group-hover:scale-110 transition-all" />

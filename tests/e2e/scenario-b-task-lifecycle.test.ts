@@ -78,6 +78,7 @@ describe("Scenario B: Task Lifecycle & Error Recording (End-to-End)", () => {
     // 4. Verify task status can be queried via GET /api/tasks/:id
     const taskDetail = await appServer.request
       .get(`/api/tasks/${taskId}`)
+      .set("walletpublickey", "anonymous")
       .expect(200);
 
     expect(taskDetail.body.id).toBe(taskId);
