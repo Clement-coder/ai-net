@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { TaskResponse, DAGNode, DAGEvent, PaymentEvent } from '../types/api';
+import type { TaskResponse, DAGNode, DAGEvent, DAGEventPayload, PaymentEvent } from '../types/api';
 import { apiClient } from '../services/api';
 
 // Helper to determine payment amount based on agent type or node ID
@@ -42,10 +42,15 @@ export const useTaskMonitor = (taskId: string | undefined) => {
         data.dag.forEach(node => {
           if (node.status === 'completed') {
             if (node.result) {
-              const res = node.result as any;
-              initialOutputs[node.nodeId] = res.summary || res.content || res.markdown || (typeof res === 'string' ? res : JSON.stringify(res));
+              const res = node.result as Record<string, unknown> | string;
+              if (typeof res === 'string') {
+                initialOutputs[node.nodeId] = res;
+              } else {
+                initialOutputs[node.nodeId] = (res.summary as string) || (res.content as string) || (res.markdown as string) || JSON.stringify(res);
+              }
             }
-            const txHash = (node.result as any)?.txHash || 'mock-hash';
+            const resultObj = node.result as Record<string, unknown> | undefined;
+            const txHash = (resultObj?.txHash as string) || 'mock-hash';
             initialPayments.push({
               amount: getAmountForAgent(node.agentType),
               direction: 'out',
@@ -70,7 +75,7 @@ export const useTaskMonitor = (taskId: string | undefined) => {
         setPayments(initialPayments);
       }
       setError(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to fetch task details:', err);
       // Resilient fallback for E2E tests
       if (id === 'mock-task-e2e-123') {
@@ -81,7 +86,7 @@ export const useTaskMonitor = (taskId: string | undefined) => {
         ];
         setNodes(mockDag);
       } else {
-        setError(err);
+        setError(err instanceof Error ? err : new Error(String(err)));
       }
     } finally {
       setLoading(false);
@@ -119,8 +124,13 @@ export const useTaskMonitor = (taskId: string | undefined) => {
           } 
           
           else if (data.type === 'node_completed' && data.nodeId) {
-            const payload = data.payload as any;
-            const outputText = payload?.summary || payload?.content || payload?.markdown || (typeof payload === 'string' ? payload : '');
+            const payload = data.payload;
+            const outputText = payload && typeof payload === 'string'
+              ? payload
+              : ((payload as DAGEventPayload)?.summary ||
+                 (payload as DAGEventPayload)?.content ||
+                 (payload as DAGEventPayload)?.markdown ||
+                 '');
             
             setNodes(prev => prev.map(n => n.nodeId === data.nodeId ? { ...n, status: 'completed', result: payload } : n));
             
@@ -133,7 +143,7 @@ export const useTaskMonitor = (taskId: string | undefined) => {
           } 
           
           else if (data.type === 'node_failed' && data.nodeId) {
-            const errMessage = (data.payload as any)?.error || 'Node execution failed';
+            const errMessage = (data.payload as DAGEventPayload | undefined)?.error || 'Node execution failed';
             setNodes(prev => prev.map(n => n.nodeId === data.nodeId ? { ...n, status: 'failed', error: errMessage } : n));
           } 
           
@@ -153,7 +163,7 @@ export const useTaskMonitor = (taskId: string | undefined) => {
           } 
           
           else if (data.type === 'payment_released' && data.nodeId) {
-            const txHash = (data.payload as any)?.txHash || 'mock-hash';
+            const txHash = (data.payload as DAGEventPayload | undefined)?.txHash || 'mock-hash';
             const agentType = data.nodeId.replace('node_', '').replace('node-', '');
             setPayments(prev => {
               // check if there's already a locked payment for this nodeId to update it
