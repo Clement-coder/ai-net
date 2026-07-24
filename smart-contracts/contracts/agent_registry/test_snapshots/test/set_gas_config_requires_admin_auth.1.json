@@ -14,10 +14,51 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "freeze_agent",
+              "function_name": "set_gas_config",
               "args": [
                 {
-                  "symbol": "agent_state"
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "register_agent"
+                      },
+                      "val": {
+                        "u64": 50000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "register_agent_marginal"
+                      },
+                      "val": {
+                        "u64": 20000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resolve_error"
+                      },
+                      "val": {
+                        "u64": 25000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resolve_error_marginal"
+                      },
+                      "val": {
+                        "u64": 15000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "tx_overhead"
+                      },
+                      "val": {
+                        "u64": 10000
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -26,26 +67,7 @@
         }
       ]
     ],
-    [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "unfreeze_agent",
-              "args": [
-                {
-                  "symbol": "agent_state"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ]
+    []
   ],
   "ledger": {
     "protocol_version": 22,
@@ -57,51 +79,6 @@
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "FrozenAgent"
-                },
-                {
-                  "symbol": "agent_state"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "FrozenAgent"
-                    },
-                    {
-                      "symbol": "agent_state"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "bool": false
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          4095
-        ]
-      ],
       [
         {
           "contract_data": {
@@ -141,6 +118,59 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "GasConfig"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "map": [
+                            {
+                              "key": {
+                                "symbol": "register_agent"
+                              },
+                              "val": {
+                                "u64": 50000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "register_agent_marginal"
+                              },
+                              "val": {
+                                "u64": 20000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "resolve_error"
+                              },
+                              "val": {
+                                "u64": 25000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "resolve_error_marginal"
+                              },
+                              "val": {
+                                "u64": 15000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "tx_overhead"
+                              },
+                              "val": {
+                                "u64": 10000
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Paused"
                             }
                           ]
@@ -156,7 +186,7 @@
             },
             "ext": "v0"
           },
-          4095
+          535680
         ]
       ],
       [
@@ -194,39 +224,6 @@
       ],
       [
         {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 5541220902715666415
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 5541220902715666415
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
           "contract_code": {
             "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           }
@@ -243,34 +240,10 @@
             },
             "ext": "v0"
           },
-          4095
+          535680
         ]
       ]
     ]
   },
-  "events": [
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "registry"
-              },
-              {
-                "symbol": "unfreeze"
-              }
-            ],
-            "data": {
-              "symbol": "agent_state"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    }
-  ]
+  "events": []
 }

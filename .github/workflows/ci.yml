@@ -105,7 +105,7 @@ jobs:
         run: npm install
 
       - name: Run E2E Integration Tests (Scenarios A, B, C)
-        run: npx jest --config ../tests/e2e/jest.config.js --runInBand --passWithNoTests
+        run: npx jest --config ../tests/e2e/jest.config.js --runInBand --passWithNoTests --forceExit
         env:
           NODE_ENV: test
           SKIP_STELLAR_ACCOUNT_VERIFY: "true"

@@ -19,7 +19,7 @@ export function createTasksRouter(dispatch: DispatchFn, releasePayment: PaymentR
 const CreateTaskSchema = z.object({
   prompt: z.string().min(1),
   walletPublicKey: z.string().optional(),
-  maxBudgetXLM: z.number().min(0.1).optional(),
+  maxBudgetXLM: z.number().min(0.1).optional().default(1),
   agentPreferences: z.array(z.string()).optional(),
 });
 

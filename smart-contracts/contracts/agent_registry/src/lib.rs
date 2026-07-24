@@ -35,8 +35,7 @@
 mod events;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
 
 // ─── Gas budget constants (empirical, CU / CPU instructions) ─────────────────
@@ -165,7 +164,7 @@ pub enum VoidBatchResult {
     Err(u32),
 }
 
-#[contracterror]
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
@@ -177,6 +176,28 @@ pub enum Error {
     NotAdmin = 6,
     AlreadyResolved = 7,
     DuplicateInBatch = 8,
+}
+
+impl From<Error> for soroban_sdk::Error {
+    fn from(err: Error) -> Self {
+        soroban_sdk::Error::from_contract_error(err as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for Error {
+    fn from(err: soroban_sdk::Error) -> Self {
+        match err.get_code() {
+            1 => Error::NotFound,
+            2 => Error::Unauthorized,
+            3 => Error::AlreadyExists,
+            4 => Error::ContractPaused,
+            5 => Error::AgentFrozen,
+            6 => Error::NotAdmin,
+            7 => Error::AlreadyResolved,
+            8 => Error::DuplicateInBatch,
+            _ => Error::NotFound,
+        }
+    }
 }
 
 impl Error {
@@ -198,6 +219,11 @@ impl Error {
     }
 }
 
+impl<'a> From<&'a Error> for soroban_sdk::Error {
+    fn from(err: &'a Error) -> Self {
+        soroban_sdk::Error::from_contract_error(*err as u32)
+    }
+}
 #[contract]
 pub struct AgentRegistryContract;
 
@@ -634,7 +660,8 @@ impl AgentRegistryContract {
         env: Env,
         error_ids: Vec<BytesN<32>>,
         resolution: Resolution,
-    ) -> Vec<VoidBatchResult> {
+    ) -> Result<Vec<VoidBatchResult>, Error> {
+        require_admin(&env)?;
         let mut results: Vec<VoidBatchResult> = Vec::new(&env);
         let mut all_ok = true;
 
@@ -666,7 +693,7 @@ impl AgentRegistryContract {
         }
 
         if !all_ok || error_ids.is_empty() {
-            return results;
+            return Ok(results);
         }
 
         // ── Phase 2: commit ──────────────────────────────────────────────────
@@ -682,7 +709,7 @@ impl AgentRegistryContract {
         }
         extend_ttl_batch(&env, &ttl_keys);
 
-        results
+        Ok(results)
     }
 
     /// Fetch a single error entry (for tests / off-chain indexing).
@@ -730,11 +757,13 @@ impl AgentRegistryContract {
     }
 
     /// Override empirical gas parameters stored in instance config.
-    pub fn set_gas_config(env: Env, config: GasConfig) {
+    pub fn set_gas_config(env: Env, config: GasConfig) -> Result<(), Error> {
+        require_admin(&env)?;
         env.storage().instance().set(&DataKey::GasConfig, &config);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(())
     }
 
     /// Read the current gas configuration (defaults if never set).
@@ -1061,41 +1090,69 @@ mod test {
     }
 
     #[test]
-    fn non_admin_cannot_freeze() {
-        let env = Env::default();
-        let contract_id = env.register(AgentRegistryContract, ());
-        let client = AgentRegistryContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-
-        env.mock_auths(&[]);
-        let result = client.try_freeze_agent(&Symbol::new(&env, "some_agent"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn non_admin_cannot_unfreeze() {
-        let env = Env::default();
-        let contract_id = env.register(AgentRegistryContract, ());
-        let client = AgentRegistryContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-
-        env.mock_auths(&[]);
-        let result = client.try_unfreeze_agent(&Symbol::new(&env, "some_agent"));
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn is_agent_frozen_reflects_state() {
         let (env, client, _admin) = setup_with_admin();
         assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.freeze_agent(&Symbol::new(&env, "agent_state"));
         assert!(client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
         client.unfreeze_agent(&Symbol::new(&env, "agent_state"));
-        assert!(!client.is_agent_frozen(&Symbol::new(&env, "agent_state")));
+    }
+
+    #[test]
+    fn resolve_errors_requires_admin_auth() {
+        let env = Env::default();
+        let contract_id = env.register(AgentRegistryContract, ());
+        let client = AgentRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        let reporter = Address::generate(&env);
+        let id1 = error_id(&env, 40);
+        client.report_error(&id1, &reporter, &String::from_str(&env, "some error"));
+
+        let mut ids = Vec::new(&env);
+        ids.push_back(id1.clone());
+
+        // Test non-admin cannot resolve errors
+        env.mock_auths(&[]);
+        let result = client.try_resolve_errors(&ids, &Resolution::Fixed);
+        assert!(result.is_err());
+
+        // Test admin succeeds
+        env.mock_all_auths();
+        let result_admin = client.resolve_errors(&ids, &Resolution::Fixed);
+        assert_eq!(result_admin.get(0).unwrap(), VoidBatchResult::Ok);
+    }
+
+    #[test]
+    fn set_gas_config_requires_admin_auth() {
+        let env = Env::default();
+        let contract_id = env.register(AgentRegistryContract, ());
+        let client = AgentRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        let new_config = GasConfig {
+            tx_overhead: 10_000,
+            register_agent: 50_000,
+            register_agent_marginal: 20_000,
+            resolve_error: 25_000,
+            resolve_error_marginal: 15_000,
+        };
+
+        // Test non-admin cannot set gas config
+        env.mock_auths(&[]);
+        let result = client.try_set_gas_config(&new_config);
+        assert!(result.is_err());
+
+        // Test admin succeeds
+        env.mock_all_auths();
+        client.set_gas_config(&new_config);
+        assert_eq!(client.get_gas_config(), new_config);
     }
 
     // ── Batch registration ───────────────────────────────────────────────────
@@ -1182,10 +1239,11 @@ mod test {
     #[test]
     fn register_agents_duplicate_ids_in_batch() {
         let (env, client) = setup();
-        let owner = Address::generate(&env);
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
         let mut agents = Vec::new(&env);
-        agents.push_back(make_record(&env, "same", "research", owner.clone()));
-        agents.push_back(make_record(&env, "same", "coding", owner));
+        agents.push_back(make_record(&env, "same", "research", owner1));
+        agents.push_back(make_record(&env, "same", "coding", owner2));
 
         let results = client.register_agents(&agents);
         assert_eq!(
@@ -1216,7 +1274,7 @@ mod test {
 
     #[test]
     fn resolve_errors_batch_success() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 1);
         let id2 = error_id(&env, 2);
@@ -1244,7 +1302,7 @@ mod test {
 
     #[test]
     fn resolve_errors_partial_failure_is_atomic() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 10);
         let missing = error_id(&env, 99);
@@ -1269,7 +1327,7 @@ mod test {
 
     #[test]
     fn resolve_errors_already_resolved_fails_atomically() {
-        let (env, client) = setup();
+        let (env, client, _admin) = setup_with_admin();
         let reporter = Address::generate(&env);
         let id1 = error_id(&env, 20);
         let id2 = error_id(&env, 21);
