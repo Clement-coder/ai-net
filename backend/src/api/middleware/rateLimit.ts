@@ -1,3 +1,4 @@
+import { LRUCache } from "lru-cache";
 import type { Request, Response, NextFunction } from "express";
 
 export interface RateLimitOptions {
@@ -5,60 +6,89 @@ export interface RateLimitOptions {
   windowMs?: number;
   /** Maximum number of requests allowed within the window. Default: 20. */
   maxRequests?: number;
+  /**
+   * Maximum number of distinct IPs tracked simultaneously **per limiter
+   * instance**. When this many entries are present, the least-recently-used
+   * IP is evicted on the next accepted request. Defaults to 10 000, which
+   * keeps the worst-case memory footprint predictable under IP-flood
+   * attacks (issue #154). Note: the module-instantiated default limiters
+   * (`rateLimitMiddleware` and `registerRateLimitMiddleware`) are separate
+   * instances, so two requests in flight can touch up to 2 × maxEntries
+   * entries combined.
+   */
+  maxEntries?: number;
 }
 
 interface Window {
   timestamps: number[];
 }
 
+export interface RateLimiter {
+  middleware: (req: Request, res: Response, next: NextFunction) => void;
+  /**
+   * Fully clears tracked state. In this implementation there is no
+   * background eviction interval to halt, so `stop()` is essentially
+   * `cache.clear()` — kept for API compatibility with the original
+   * implementation and for tests / graceful shutdown hooks.
+   *
+   * **Behavior change vs the original implementation** (issue #154): the
+   * old `stop()` called `clearInterval()` on a background eviction sweep;
+   * the new `stop()` clears the cache. Anything that stored the factory
+   * return value and relied on the old semantic should migrate.
+   */
+  stop: () => void;
+  /**
+   * Current number of tracked IPs. Exposed primarily for tests and
+   * operational debugging — not part of the rate-limiting contract.
+   * @internal
+   */
+  size: () => number;
+}
+
 /**
  * Create a configurable in-memory sliding-window rate limiter.
  *
- * Improvements over the original implementation:
- *  - Accepts `windowMs` / `maxRequests` options so callers can tune limits
- *    per-route (e.g. stricter limits for agent registration).
- *  - Runs a background eviction interval that removes stale entries so the
- *    internal `windows` Map does not grow without bound when many unique IPs
- *    visit (fixes the memory-leak identified in issue #181).
- *  - The eviction interval is returned via `stop()` so tests and the server
- *    shutdown path can clear it cleanly.
+ * Backing store is `lru-cache`, which provides both:
+ *  - a hard cap on entry count (`max` / `maxEntries`) so the worst-case
+ *    memory footprint is bounded against IP-flood attacks (issue #154 —
+ *    the previous `Map`-only implementation grew unboundedly between the
+ *    once-per-minute TTL sweeps); and
+ *  - TTL-based eviction (`ttl` / `windowMs`) so quiet IPs drop out
+ *    automatically after their window passes.
+ *
+ * Active IPs stay cached because every accepted request calls
+ * `windows.set(ip, win)`, which refreshes the entry's age; the
+ * least-recently-used entry is evicted only when inserting past `max`.
  */
-export function createRateLimiter(opts: RateLimitOptions = {}): {
-  middleware: (req: Request, res: Response, next: NextFunction) => void;
-  stop: () => void;
-} {
+export function createRateLimiter(opts: RateLimitOptions = {}): RateLimiter {
   const windowMs = opts.windowMs ?? 60_000;
   const maxRequests = opts.maxRequests ?? 20;
+  const maxEntries = opts.maxEntries ?? 10_000;
 
-  const windows = new Map<string, Window>();
-
-  // Evict entries whose entire timestamp window has expired.
-  // Running every minute keeps memory bounded for long-lived processes.
-  const evictionInterval = setInterval(() => {
-    const cutoff = Date.now() - windowMs;
-    for (const [ip, win] of windows) {
-      win.timestamps = win.timestamps.filter((t) => t > cutoff);
-      if (win.timestamps.length === 0) {
-        windows.delete(ip);
-      }
-    }
-  }, 60_000);
-
-  // Allow the Node.js process to exit even if the interval is still active
-  // (important for test environments and long-running servers that call stop()).
-  if (evictionInterval.unref) evictionInterval.unref();
+  const windows = new LRUCache<string, Window>({
+    max: maxEntries,
+    ttl: windowMs,
+    // Don't refresh the age on read: a 429 must not let stale IPs linger.
+    updateAgeOnGet: false,
+  });
 
   function middleware(req: Request, res: Response, next: NextFunction): void {
+    // NOTE: `req.ip` depends on Express's `trust proxy` setting. If the app
+    // ever sets `trust proxy = true`, attackers can rotate `X-Forwarded-For`
+    // to cheaply produce synthetic IPs; the cache remains bounded by
+    // `maxEntries` but each request still costs LRU insert/refresh work.
+    // Until trust proxy is configured, every untrusted request collapses to
+    // a single `"unknown"` entry, so the rate limiter is effectively a
+    // global cap — consider raising `maxRequests` or skipping rate-limiting
+    // for `ip === "unknown"` if you ever turn trust proxy on.
     const ip = req.ip ?? "unknown";
     const now = Date.now();
     const cutoff = now - windowMs;
 
-    let win = windows.get(ip);
-    if (!win) {
-      win = { timestamps: [] };
-      windows.set(ip, win);
-    }
-
+    let win = windows.get(ip) ?? { timestamps: [] };
+    // Always trim the timestamps for this IP — even when the entry was
+    // pulled from the cache — so partial windows decay correctly across
+    // the rolling boundary.
     win.timestamps = win.timestamps.filter((t) => t > cutoff);
 
     if (win.timestamps.length >= maxRequests) {
@@ -72,14 +102,21 @@ export function createRateLimiter(opts: RateLimitOptions = {}): {
     }
 
     win.timestamps.push(now);
+    // Re-set the entry to refresh its age so active IPs persist; this
+    // also keeps the LRU recency ordering accurate for eviction.
+    windows.set(ip, win);
     next();
   }
 
   function stop(): void {
-    clearInterval(evictionInterval);
+    windows.clear();
   }
 
-  return { middleware, stop };
+  return {
+    middleware,
+    stop,
+    size: () => windows.size,
+  };
 }
 
 // ── Default instances ────────────────────────────────────────────────────────
