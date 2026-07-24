@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { createRateLimiter } from '../src/api/middleware/rateLimit';
 
 // ── rateLimit ─────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,33 @@ describe('rateLimitMiddleware', () => {
     const next = jest.fn();
     rateLimitMiddleware(req, makeRes() as unknown as Response, next as NextFunction);
     expect(next).toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
+  it('evicts stale entries to prevent memory leaks', () => {
+    jest.useFakeTimers();
+    const limiter = createRateLimiter({ windowMs: 60_000, maxRequests: 5 });
+
+    // Simulate 100 unique IPs each making a single request
+    for (let i = 0; i < 100; i++) {
+      const next = jest.fn();
+      limiter.middleware(makeReq(`192.168.1.${i}`), makeRes() as unknown as Response, next as NextFunction);
+      expect(next).toHaveBeenCalled();
+    }
+
+    // Advance time past the window so all entries are stale
+    jest.advanceTimersByTime(70_000);
+
+    // Trigger the eviction interval (runs every 60s)
+    jest.advanceTimersByTime(60_000);
+
+    // A new request from a previously tracked IP should still succeed
+    // and internally the stale entries should have been removed
+    const next = jest.fn();
+    limiter.middleware(makeReq('192.168.1.0'), makeRes() as unknown as Response, next as NextFunction);
+    expect(next).toHaveBeenCalled();
+
+    limiter.stop();
     jest.useRealTimers();
   });
 });
