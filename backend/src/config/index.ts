@@ -14,6 +14,23 @@ const envSchema = z.object({
   ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
   NPM_PACKAGE_VERSION: z.string().default(pkg.version ?? "0.1.0"),
   GRACEFUL_SHUTDOWN_TIMEOUT: z.coerce.number().int().positive().default(30),
+
+  // ── Input validation ────────────────────────────────────────────────────────
+  /** Maximum allowed length (characters) for a task prompt. Default: 10 000. */
+  MAX_PROMPT_LENGTH: z.coerce.number().int().positive().default(10_000),
+
+  // ── Rate limiting ───────────────────────────────────────────────────────────
+  /** Rolling window in milliseconds for the tasks rate limiter. Default: 60 000 (1 min). */
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  /** Max task-creation requests per IP per window. Default: 20. */
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(20),
+  /** Max agent-registration requests per IP per window. Default: 10. */
+  REGISTER_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(10),
+
+  // ── Per-wallet quotas ───────────────────────────────────────────────────────
+  /** Maximum tasks a single wallet may create within a rolling 24-hour window.
+   *  Set to 0 to disable the daily quota. Default: 100. */
+  DAILY_TASK_LIMIT_PER_WALLET: z.coerce.number().int().min(0).default(100),
 });
 
 let _config: z.infer<typeof envSchema> | null = null;
