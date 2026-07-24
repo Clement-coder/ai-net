@@ -12,7 +12,8 @@ const codingAgent: AgentRecord = {
   endpoint: "http://127.0.0.1:3001/health",
   stellarPublicKey: "GBXX...",
   reputationScore: 0,
-  lastSeenAt: new Date().toISOString()
+  lastSeenAt: new Date().toISOString(),
+  status: "offline"
 };
 
 function createTestApp(initialAgents: AgentRecord[] = [], healthTimeoutMs = 500) {
@@ -25,7 +26,8 @@ function createTestApp(initialAgents: AgentRecord[] = [], healthTimeoutMs = 500)
       endpoint         TEXT NOT NULL,
       stellarPublicKey TEXT NOT NULL,
       reputationScore  REAL NOT NULL DEFAULT 0,
-      lastSeenAt       TEXT NOT NULL
+      lastSeenAt       TEXT NOT NULL,
+      status           TEXT NOT NULL DEFAULT 'offline'
     )
   `);
   const db = createAgentDb(rawDb);

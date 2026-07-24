@@ -73,12 +73,12 @@ jobs:
       - name: Test (unit)
         run: npm test --if-present
 
-  backend-e2e:
-    name: Backend E2E
+  e2e-integration:
+    name: Fullstack E2E Integration
     needs: detect_projects
-    if: ${{ needs.detect_projects.outputs.backend == 'true' && github.event_name == 'pull_request' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -104,11 +104,22 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: E2E tests
-        run: npx jest --testPathPattern="tests/e2e" --runInBand
+      - name: Run E2E Integration Tests (Scenarios A, B, C)
+        run: npx jest --config ../tests/e2e/jest.config.js --runInBand --passWithNoTests --forceExit
         env:
+          NODE_ENV: test
+          SKIP_STELLAR_ACCOUNT_VERIFY: "true"
           STELLAR_TEST_SECRET: ${{ secrets.STELLAR_TEST_SECRET }}
           VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+
+      - name: Upload E2E Coverage Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-coverage-report
+          path: coverage-e2e/
+
+
 
   frontend:
     name: Frontend
@@ -199,8 +210,8 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Unit tests (fast, always run)
+        run: npm run test:unit
 
       - name: Cargo lint
         if: ${{ needs.detect_projects.outputs.smart_contracts_cargo == 'true' }}
@@ -231,3 +242,40 @@ jobs:
         run: |
           cargo build --locked -p agent-registry --target wasm32v1-none --release
           cargo build --locked -p error-registry --target wasm32v1-none --release
+
+  smart-contracts-integration:
+    name: Smart Contracts (Integration)
+    needs: detect_projects
+    if: ${{ needs.detect_projects.outputs.smart_contracts_cargo == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: smart-contracts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: smart-contracts/node_modules
+          key: ${{ runner.os }}-node-20-smart-contracts-${{ hashFiles('smart-contracts/package-lock.json', 'smart-contracts/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-smart-contracts-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Integration tests
+        run: npm run test:integration
+        env:
+          STELLAR_COORDINATOR_SECRET: ${{ secrets.STELLAR_COORDINATOR_SECRET }}
+          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}

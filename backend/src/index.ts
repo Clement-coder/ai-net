@@ -6,8 +6,11 @@
 
 import { createApp } from "./api/app";
 import { initializeAgents } from "./agents";
-import { startAgentSync } from "./registry/sync";
+import { startAgentSync, stopAgentSync } from "./registry/sync";
 import { loadConfig, getConfig } from "./config";
+import { closeDb } from "./db";
+import { closeAgentDb, createAgentDb, getAgentDb } from "./db/agents";
+import { closeTaskDb, createTaskDb, getTaskDb } from "./db/tasks";
 
 async function main() {
   // ── Validate env config at startup ──────────────────────────────────────────
@@ -25,7 +28,7 @@ async function main() {
     await initializeAgents();
 
     // Create and start the server
-    const { httpServer } = createApp();
+    const { httpServer, close } = createApp();
 
     const port = config.PORT;
 
@@ -43,27 +46,79 @@ async function main() {
     });
 
     // ── Graceful shutdown ──────────────────────────────────────────────────────
-    const shutdown = (signal: string) => {
-      console.log(`[ai-net-backend] Received ${signal}, shutting down gracefully...`);
-      const timeout = setTimeout(() => {
-        console.error("[ai-net-backend] Forced shutdown after 10s timeout");
-        process.exit(1);
-      }, 10_000);
-
-      httpServer.close(() => {
-        clearTimeout(timeout);
-        console.log("[ai-net-backend] Server closed.");
-        process.exit(0);
-      });
-    };
-
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("SIGINT", () => shutdown("SIGINT"));
+    setupGracefulShutdown(httpServer, close, config);
 
   } catch (error) {
     console.error("[ai-net-backend] Failed to start server:", error);
     process.exit(1);
   }
+}
+
+export function setupGracefulShutdown(
+  httpServer: any,
+  closeApp: (callback?: () => void) => void,
+  config: { GRACEFUL_SHUTDOWN_TIMEOUT?: number }
+) {
+  let isShuttingDown = false;
+
+  const shutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log(`[ai-net-backend] Received ${signal}, starting graceful shutdown sequence...`);
+
+    const timeoutDuration = (config.GRACEFUL_SHUTDOWN_TIMEOUT ?? 30) * 1000;
+    const forcedTimeout = setTimeout(() => {
+      console.error(`[ai-net-backend] Force-killing process: shutdown timed out after ${timeoutDuration / 1000}s`);
+      process.exit(1);
+    }, timeoutDuration);
+
+    try {
+      console.log("[ai-net-backend] Phase 1: Closing HTTP/WS server and stopping new connections...");
+      await new Promise<void>((resolve) => {
+        closeApp(() => {
+          console.log("[ai-net-backend] HTTP/WS server successfully closed.");
+          resolve();
+        });
+      });
+
+      console.log("[ai-net-backend] Phase 2: Stopping agent sync service...");
+      stopAgentSync();
+
+      console.log("[ai-net-backend] Phase 3: Failing all running tasks...");
+      try {
+        const taskDb = createTaskDb(getTaskDb());
+        taskDb.failRunningTasks();
+      } catch (err) {
+        console.error("[ai-net-backend] Failed to mark tasks as failed during shutdown:", err);
+      }
+
+      console.log("[ai-net-backend] Phase 4: Marking all online agents as offline...");
+      try {
+        const agentDb = createAgentDb(getAgentDb());
+        agentDb.markAllOffline();
+      } catch (err) {
+        console.error("[ai-net-backend] Failed to mark agents offline during shutdown:", err);
+      }
+
+      console.log("[ai-net-backend] Phase 5: Closing database connections...");
+      closeDb();
+      closeAgentDb();
+      closeTaskDb();
+
+      console.log("[ai-net-backend] Graceful shutdown complete. Exiting.");
+      clearTimeout(forcedTimeout);
+      process.exit(0);
+    } catch (error) {
+      console.error("[ai-net-backend] Error during graceful shutdown:", error);
+      process.exit(1);
+    }
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
+  return shutdown;
 }
 
 if (require.main === module) {

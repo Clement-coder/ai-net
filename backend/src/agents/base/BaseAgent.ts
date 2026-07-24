@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { VeniceClient, type AgentType } from '../../venice/index.js';
+import { VeniceClient, type AgentType, type VeniceClientLike } from '../../services/venice/index.js';
 
 export interface BaseAgentConfig {
-  veniceClient?: VeniceClient;
+  veniceClient?: VeniceClientLike;
   apiBaseUrl?: string;
   agentId?: string;
 }
@@ -20,7 +20,7 @@ export interface AgentError {
 }
 
 export abstract class BaseAgent {
-  protected readonly venice: VeniceClient;
+  protected readonly venice: VeniceClientLike;
   protected readonly apiBaseUrl: string;
   protected readonly agentId: string;
 

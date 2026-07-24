@@ -110,16 +110,6 @@ pub struct CleanupStats {
     pub remaining: u32,
 }
 
-/// Parameters for paginating query results.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PaginationParams {
-    /// Zero-based index of the first record to return.
-    pub offset: u32,
-    /// Maximum number of records to return. Cannot exceed 100.
-    pub limit: u32,
-}
-
 /// Storage keys. All entries live in `persistent` storage.
 #[contracttype]
 pub enum DataKey {
@@ -230,18 +220,13 @@ impl ErrorRegistryContract {
             .filter(|record| is_active(now, record))
     }
 
-    /// Return all **active** records carrying `error_code`, paginated. Expired
-    /// skipped. The pagination limit is capped at 100.
-    pub fn get_errors_by_code(
-        env: Env,
-        error_code: u32,
-        pagination: PaginationParams,
-    ) -> Vec<ErrorRecord> {
+    /// Return all **active** records carrying `error_code`. Expired records are
+    /// skipped and never returned to the caller.
+    pub fn get_errors_by_code(env: Env, error_code: u32) -> Vec<ErrorRecord> {
         let now = env.ledger().timestamp();
         let ids = read_code_index(&env, error_code);
-        let limit = core::cmp::min(pagination.limit, 100);
 
-        let mut active_records = Vec::new(&env);
+        let mut records = Vec::new(&env);
         for id in ids.iter() {
             if let Some(record) = env
                 .storage()
@@ -249,40 +234,6 @@ impl ErrorRegistryContract {
                 .get::<DataKey, ErrorRecord>(&DataKey::Record(id))
             {
                 if is_active(now, &record) {
-                    active_records.push_back(record);
-                }
-            }
-        }
-
-        let mut paginated = Vec::new(&env);
-        let len = active_records.len();
-        if pagination.offset < len {
-            let end = core::cmp::min(pagination.offset + limit, len);
-            for i in pagination.offset..end {
-                paginated.push_back(active_records.get(i).unwrap());
-            }
-        }
-        paginated
-    }
-
-    /// Return all **active** records submitted by `agent_id`. Expired records
-    /// are skipped.
-    pub fn get_errors_by_agent(env: Env, agent_id: Symbol) -> Vec<ErrorRecord> {
-        let now = env.ledger().timestamp();
-        let all_ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllErrorIds)
-            .unwrap_or_else(|| Vec::new(&env));
-
-        let mut records = Vec::new(&env);
-        for id in all_ids.iter() {
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, ErrorRecord>(&DataKey::Record(id))
-            {
-                if is_active(now, &record) && record.agent_id == agent_id {
                     records.push_back(record);
                 }
             }
@@ -290,49 +241,9 @@ impl ErrorRegistryContract {
         records
     }
 
-    /// Return a map from error code to count of active errors under that code.
-    pub fn get_error_stats(env: Env) -> Map<u32, u32> {
-        let now = env.ledger().timestamp();
-        let all_ids: Vec<BytesN<32>> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllErrorIds)
-            .unwrap_or_else(|| Vec::new(&env));
-
-        let mut stats: Map<u32, u32> = Map::new(&env);
-        for id in all_ids.iter() {
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, ErrorRecord>(&DataKey::Record(id))
-            {
-                if is_active(now, &record) {
-                    let code = record.error_code;
-                    let count = stats.get(code).unwrap_or(0);
-                    stats.set(code, count + 1);
-                }
-            }
-        }
-        stats
-    }
-
     /// Count active (non-expired) records carrying `error_code`.
     pub fn count_active_by_code(env: Env, error_code: u32) -> u32 {
-        let now = env.ledger().timestamp();
-        let ids = read_code_index(&env, error_code);
-        let mut count = 0;
-        for id in ids.iter() {
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, ErrorRecord>(&DataKey::Record(id))
-            {
-                if is_active(now, &record) {
-                    count += 1;
-                }
-            }
-        }
-        count
+        Self::get_errors_by_code(env, error_code).len()
     }
 
     /// Permissionless, bounded cleanup of expired records.

@@ -1,33 +1,39 @@
 import express, { Request, Response, NextFunction } from "express";
 import { createServer, Server as HttpServer } from "http";
 import { randomUUID } from "crypto";
+import swaggerUi from "swagger-ui-express";
 
-import { decompose } from "../coordinator/decompose";
 import {
-  executeDAG,
   type DispatchFn,
   type PaymentReleaseFn,
 } from "../coordinator/coordinator";
-import { createTask, getTask } from "../coordinator/taskStore";
+import { httpDispatch } from "../coordinator/dispatch";
+import type { AgentRegistry } from "../types/agent";
+import { getTask } from "../coordinator/taskStore";
 import { eventBus } from "../coordinator/eventBus";
 import { createEventStore, type EventStore } from "../coordinator/eventStore";
 import { attachTaskStream, type TaskStreamOptions } from "./routes/stream";
+import type { DAGNode } from "../types/task";
 import {
   createPaymentReleaseFn,
   type StellarReleasePaymentFn,
 } from "../payment";
 import { agentsRouter } from "./routes/agents";
 import { healthRouter } from "./routes/health";
-import { rateLimitMiddleware } from "./middleware/rateLimit";
+import { createStatsRouter } from "./routes/stats";
+import { createTasksRouter } from "./routes/tasks";
+import { rateLimitMiddleware, registerRateLimitMiddleware } from "./middleware/rateLimit";
 import { authMiddleware } from "./middleware/auth";
+import { createCorsMiddleware } from "./middleware/cors";
 import { requestId } from "./middleware/requestId";
 import { requestLogger } from "./middleware/requestLogger";
 import { errorHandler } from "./middleware/errorHandler";
 import { createLogger } from "../utils/logger";
 import { createTaskDb, getTaskDb } from "../db/tasks";
+import { openapiSpec } from "./docs/openapi";
 
 export interface AppOptions {
-  /** Called to execute a single DAG node; defaults to HTTP dispatch */
+  /** Called to execute a single DAG node; defaults to HTTP dispatch via agent registry */
   dispatch?: DispatchFn;
   /** Called after each node completes; defaults to no-op (returns 'mock-hash') */
   releasePayment?: PaymentReleaseFn;
@@ -35,6 +41,11 @@ export interface AppOptions {
   eventStore?: EventStore;
   /** Heartbeat / auth timing for the WebSocket stream */
   stream?: TaskStreamOptions;
+  /**
+   * Agent registry used to resolve endpoint URLs for HTTP dispatch.
+   * Required when `dispatch` is not provided; ignored when `dispatch` is set.
+   */
+  agentRegistry?: AgentRegistry;
 }
 
 /**
@@ -55,122 +66,45 @@ function tryLoadStellarRelease(): StellarReleasePaymentFn | undefined {
 
 export function createApp(opts: AppOptions = {}): {
   httpServer: HttpServer;
-  close: () => void;
+  close: (callback?: () => void) => void;
 } {
   const app = express();
   app.use(express.json());
   // ── Global middleware ────────────────────────────────────────────────────────
+  app.use((_req, res, next) => {
+    if (process.env.NODE_ENV === "production") {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+    }
+    next();
+  });
+  app.use(createCorsMiddleware());
   app.use(requestId);
   app.use(requestLogger);
 
-  const dispatch: DispatchFn = opts.dispatch ?? defaultDispatch;
+  const dispatch: DispatchFn = opts.dispatch ?? makeHttpDispatch(opts.agentRegistry);
   const releasePayment: PaymentReleaseFn =
     opts.releasePayment ?? createPaymentReleaseFn(tryLoadStellarRelease());
 
   // ── Health routes ───────────────────────────────────────────────────────────
   app.use("/health", healthRouter);
 
+  // ── Stats routes ───────────────────────────────────────────────────────────
+  app.use("/api/stats", createStatsRouter(getTaskDb()));
+
   // ── Agent routes ───────────────────────────────────────────────────────────
+  // Apply a stricter rate limit specifically to the register endpoint to
+  // prevent registration floods (the full agentsRouter handles GET/DELETE etc.).
+  app.post("/api/agents/register", registerRateLimitMiddleware);
   app.use("/api/agents", agentsRouter);
 
-  // ── POST /api/tasks ────────────────────────────────────────────────────────
-  app.post(
-    "/api/tasks",
-    authMiddleware,
-    rateLimitMiddleware,
-    (req: Request, res: Response) => {
-      const { prompt, walletPublicKey, maxBudgetXLM } = req.body as {
-        prompt?: string;
-        walletPublicKey?: string;
-        maxBudgetXLM?: number;
-      };
-
-      if (!prompt || typeof prompt !== "string" || prompt.trim() === "") {
-        return res.status(400).json({ error: "prompt is required" });
-      }
-
-      if (maxBudgetXLM !== undefined && maxBudgetXLM < 0.1) {
-        return res.status(400).json({ error: "maxBudgetXLM must be >= 0.1" });
-      }
-
-      const taskId = `task_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-      const dag = decompose(taskId, prompt);
-      const now = new Date().toISOString();
-      const correlationId = res.locals.requestId;
-
-      createTask({
-        taskId,
-        prompt,
-        walletPublicKey:
-          walletPublicKey ??
-          (req.headers["walletpublickey"] as string | undefined) ??
-          "anonymous",
-        status: "queued",
-        dag,
-        createdAt: now,
-        updatedAt: now,
-        requestId: correlationId,
-      });
-
-      const log = createLogger({ requestId: correlationId, taskId });
-
-      // Run the DAG asynchronously — do not await
-      setImmediate(() => {
-        executeDAG(getTask(taskId)!, dispatch, releasePayment).catch((err) => {
-          log.error({ err }, "DAG execution error");
-        });
-      });
-
-      log.info({ dagNodeCount: dag.length }, "task created");
-
-      return res
-        .status(201)
-        .json({ taskId, dagPreview: dag, status: "queued" });
-    },
-  );
-
-  // ── GET /api/tasks ─────────────────────────────────────────────────────────
-  app.get("/api/tasks", authMiddleware, (req: Request, res: Response) => {
-    const walletPublicKey = req.headers["walletpublickey"] as
-      string | undefined;
-    if (!walletPublicKey)
-      return res.status(401).json({ error: "walletpublickey header required" });
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
-    const pageSize = Math.min(
-      100,
-      Math.max(1, parseInt((req.query.pageSize as string) ?? "20", 10)),
-    );
-    const taskDb = createTaskDb(getTaskDb());
-    const status = req.query.status as string | undefined;
-    const q = req.query.q as string | undefined;
-    const sort = req.query.sort as
-      "createdAt:asc" | "createdAt:desc" | undefined;
-    const { tasks, total } = taskDb.list(walletPublicKey, page, pageSize, {
-      status,
-      q,
-      sort,
-    });
-    return res.json({ tasks, total, page, pageSize });
+  // ── API docs ─────────────────────────────────────────────────────────────────
+  app.use("/docs", swaggerUi.serve, swaggerUi.setup(openapiSpec));
+  app.get("/openapi.json", (_req: Request, res: Response) => {
+    res.json(openapiSpec);
   });
 
-  // ── GET /api/tasks/:id ─────────────────────────────────────────────────────
-  app.get("/api/tasks/:id", (req: Request, res: Response) => {
-    const task = getTask(req.params.id!);
-    if (!task) return res.status(404).json({ error: "Task not found" });
-    return res.json({ ...task, id: task.taskId, dag: task.dag });
-  });
-
-  // ── DELETE /api/tasks/:id ──────────────────────────────────────────────────
-  app.delete("/api/tasks/:id", (req: Request, res: Response) => {
-    const task = getTask(req.params.id!);
-    if (!task) return res.status(404).json({ error: "Task not found" });
-    if (task.status === "running") {
-      return res.status(409).json({ error: "Cannot cancel a running task" });
-    }
-    const taskDb = createTaskDb(getTaskDb());
-    taskDb.updateStatus(req.params.id!, "cancelled");
-    return res.json({ ...task, id: task.taskId, status: "cancelled" });
-  });
+  // ── Task routes ────────────────────────────────────────────────────────────
+  app.use("/api/tasks", createTasksRouter(dispatch, releasePayment));
 
   // ── HTTP server ────────────────────────────────────────────────────────────
   const httpServer = createServer(app);
@@ -196,22 +130,39 @@ export function createApp(opts: AppOptions = {}): {
   // ── Error handler (must be last) ───────────────────────────────────────────
   app.use(errorHandler);
 
-  function close(): void {
+  function close(callback?: () => void): void {
     detachStream();
     stopRecording();
     eventStore.close();
-    httpServer.close();
+    httpServer.close(callback);
   }
 
   return { httpServer, close };
 }
 
-async function defaultDispatch(
-  taskId: string,
-  node: { nodeId: string; agentType: string; prompt: string },
-  context: string,
-): Promise<unknown> {
-  // In production this POSTs to the agent's HTTP endpoint.
-  // The e2e test replaces this via opts.dispatch.
-  throw new Error(`No agent registered for type: ${node.agentType}`);
+/**
+ * Build a DispatchFn that looks up the cheapest agent for a node's type in the
+ * provided registry and forwards the call to that agent via HTTP.
+ *
+ * If no registry is provided (e.g. during tests that supply their own dispatch)
+ * the returned function throws a clear error so misconfiguration is obvious at
+ * runtime rather than producing a silent no-op.
+ */
+function makeHttpDispatch(registry?: AgentRegistry): DispatchFn {
+  return async (taskId: string, node: DAGNode, context: string): Promise<unknown> => {
+    if (!registry) {
+      throw new Error(
+        `No agent registry configured. Provide agentRegistry in AppOptions or supply a custom dispatch function.`,
+      );
+    }
+
+    const agents = await registry.getAgents(node.type);
+    if (!agents || agents.length === 0) {
+      throw new Error(`No agent registered for type: ${node.type}`);
+    }
+
+    // Pick cheapest available agent.
+    const agent = [...agents].sort((a, b) => a.cost - b.cost)[0];
+    return httpDispatch(agent, node.nodeId, node, context);
+  };
 }

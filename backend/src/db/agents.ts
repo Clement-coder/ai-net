@@ -9,6 +9,7 @@ export interface AgentRecord {
   stellarPublicKey: string;
   reputationScore: number;
   lastSeenAt: string;
+  status?: string;
 }
 
 let _agentDb: Database.Database | null = null;
@@ -25,9 +26,15 @@ export function getAgentDb(dbPath?: string): Database.Database {
         endpoint         TEXT NOT NULL,
         stellarPublicKey TEXT NOT NULL,
         reputationScore  REAL NOT NULL DEFAULT 0,
-        lastSeenAt       TEXT NOT NULL
+        lastSeenAt       TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'offline'
       )
     `);
+    try {
+      _agentDb.exec("ALTER TABLE agents ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'");
+    } catch (e) {
+      // Ignored if column already exists
+    }
   }
   return _agentDb;
 }
@@ -43,23 +50,26 @@ export interface AgentDb {
   list(filters?: { capability?: string; minReputation?: number; maxPriceXLM?: number }): AgentRecord[];
   delete(id: string): void;
   updateReputation(id: string, delta: number): void;
+  markAllOffline(): void;
 }
 
 export function createAgentDb(db: Database.Database): AgentDb {
   return {
     upsert(agent: AgentRecord): void {
       db.prepare(`
-        INSERT INTO agents (id, capabilities, pricingXLM, endpoint, stellarPublicKey, reputationScore, lastSeenAt)
-        VALUES (@id, @capabilities, @pricingXLM, @endpoint, @stellarPublicKey, @reputationScore, @lastSeenAt)
+        INSERT INTO agents (id, capabilities, pricingXLM, endpoint, stellarPublicKey, reputationScore, lastSeenAt, status)
+        VALUES (@id, @capabilities, @pricingXLM, @endpoint, @stellarPublicKey, @reputationScore, @lastSeenAt, @status)
         ON CONFLICT(id) DO UPDATE SET
           capabilities = excluded.capabilities,
           pricingXLM = excluded.pricingXLM,
           endpoint = excluded.endpoint,
           stellarPublicKey = excluded.stellarPublicKey,
-          lastSeenAt = excluded.lastSeenAt
+          lastSeenAt = excluded.lastSeenAt,
+          status = excluded.status
       `).run({
         ...agent,
-        capabilities: JSON.stringify(agent.capabilities)
+        capabilities: JSON.stringify(agent.capabilities),
+        status: agent.status ?? 'offline'
       });
     },
 
@@ -68,7 +78,8 @@ export function createAgentDb(db: Database.Database): AgentDb {
       if (!row) return undefined;
       return {
         ...row,
-        capabilities: JSON.parse(row.capabilities)
+        capabilities: JSON.parse(row.capabilities),
+        status: row.status ?? 'offline'
       };
     },
 
@@ -92,7 +103,8 @@ export function createAgentDb(db: Database.Database): AgentDb {
       const rows = db.prepare(query).all(...params) as any[];
       return rows.map(row => ({
         ...row,
-        capabilities: JSON.parse(row.capabilities)
+        capabilities: JSON.parse(row.capabilities),
+        status: row.status ?? 'offline'
       }));
     },
 
@@ -102,6 +114,10 @@ export function createAgentDb(db: Database.Database): AgentDb {
 
     updateReputation(id: string, delta: number): void {
       db.prepare("UPDATE agents SET reputationScore = reputationScore + ? WHERE id = ?").run(delta, id);
+    },
+
+    markAllOffline(): void {
+      db.prepare("UPDATE agents SET status = 'offline' WHERE status = 'online'").run();
     }
   };
 }

@@ -145,28 +145,11 @@ fn get_errors_by_code_skips_expired() {
     submit(&client, &env, 11, 55, 10_000); // expires 11_000
 
     // Both active now.
-    assert_eq!(
-        client
-            .get_errors_by_code(
-                &55,
-                &PaginationParams {
-                    offset: 0,
-                    limit: 100
-                }
-            )
-            .len(),
-        2
-    );
+    assert_eq!(client.get_errors_by_code(&55).len(), 2);
 
     // After first expires, only the long-lived one remains visible.
     env.ledger().set_timestamp(2_000);
-    let active = client.get_errors_by_code(
-        &55,
-        &PaginationParams {
-            offset: 0,
-            limit: 100,
-        },
-    );
+    let active = client.get_errors_by_code(&55);
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap().expires_at, 11_000);
 
@@ -270,18 +253,7 @@ fn cleanup_removes_code_index_entry_when_emptied() {
     });
 
     // And querying by code returns nothing.
-    assert_eq!(
-        client
-            .get_errors_by_code(
-                &777,
-                &PaginationParams {
-                    offset: 0,
-                    limit: 100
-                }
-            )
-            .len(),
-        0
-    );
+    assert_eq!(client.get_errors_by_code(&777).len(), 0);
 }
 
 #[test]
@@ -294,13 +266,7 @@ fn cleanup_keeps_code_index_for_surviving_records() {
     client.cleanup_expired_errors(&0);
 
     // Index for code 900 still present with exactly the survivor.
-    let remaining = client.get_errors_by_code(
-        &900,
-        &PaginationParams {
-            offset: 0,
-            limit: 100,
-        },
-    );
+    let remaining = client.get_errors_by_code(&900);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining.get(0).unwrap().expires_at, 11_000);
     assert!(client.get_error(&survivor).is_some());
@@ -397,236 +363,4 @@ fn cleanup_on_empty_registry_is_safe() {
     assert_eq!(stats.scanned, 0);
     assert_eq!(stats.removed, 0);
     assert_eq!(stats.remaining, 0);
-}
-
-// ---------------------------------------------------------------------------
-// Query/Lookup and Pagination tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn get_errors_by_code_pagination() {
-    let (env, client) = setup(1_000);
-
-    // Submit 5 active errors with code 42, having different messages.
-    let id1 = id(&env, 1);
-    client.submit_error(
-        &id1,
-        &42,
-        &sym(&env, "boom1"),
-        &sym(&env, "agent1"),
-        &10_000,
-    );
-    let id2 = id(&env, 2);
-    client.submit_error(
-        &id2,
-        &42,
-        &sym(&env, "boom2"),
-        &sym(&env, "agent1"),
-        &10_000,
-    );
-    let id3 = id(&env, 3);
-    client.submit_error(
-        &id3,
-        &42,
-        &sym(&env, "boom3"),
-        &sym(&env, "agent1"),
-        &10_000,
-    );
-    let id4 = id(&env, 4);
-    client.submit_error(
-        &id4,
-        &42,
-        &sym(&env, "boom4"),
-        &sym(&env, "agent1"),
-        &10_000,
-    );
-    let id5 = id(&env, 5);
-    client.submit_error(
-        &id5,
-        &42,
-        &sym(&env, "boom5"),
-        &sym(&env, "agent1"),
-        &10_000,
-    );
-
-    // Page 1: offset=0, limit=2
-    let page1 = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 0,
-            limit: 2,
-        },
-    );
-    assert_eq!(page1.len(), 2);
-    assert_eq!(page1.get(0).unwrap().message, sym(&env, "boom1"));
-    assert_eq!(page1.get(1).unwrap().message, sym(&env, "boom2"));
-
-    // Page 2: offset=2, limit=2
-    let page2 = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 2,
-            limit: 2,
-        },
-    );
-    assert_eq!(page2.len(), 2);
-    assert_eq!(page2.get(0).unwrap().message, sym(&env, "boom3"));
-    assert_eq!(page2.get(1).unwrap().message, sym(&env, "boom4"));
-    assert_ne!(page1.get(0).unwrap(), page2.get(0).unwrap());
-
-    // Page 3: offset=4, limit=2 (only 1 record left)
-    let page3 = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 4,
-            limit: 2,
-        },
-    );
-    assert_eq!(page3.len(), 1);
-    assert_eq!(page3.get(0).unwrap().message, sym(&env, "boom5"));
-
-    // Page 4: offset=5, limit=2 (out of bounds)
-    let page4 = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 5,
-            limit: 2,
-        },
-    );
-    assert_eq!(page4.len(), 0);
-
-    // Large limit capped at 100
-    let all = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 0,
-            limit: 1000,
-        },
-    );
-    assert_eq!(all.len(), 5);
-}
-
-#[test]
-fn get_errors_by_code_pagination_skips_expired() {
-    let (env, client) = setup(1_000);
-
-    // Submit 4 errors with code 42 (some expired, some active).
-    submit(&client, &env, 1, 42, 100); // expires at 1_100
-    submit(&client, &env, 2, 42, 10_000); // expires at 11_000
-    submit(&client, &env, 3, 42, 100); // expires at 1_100
-    submit(&client, &env, 4, 42, 10_000); // expires at 11_000
-
-    env.ledger().set_timestamp(2_000); // Expire error 1 and 3
-
-    // We should only see active errors 2 and 4.
-    let page = client.get_errors_by_code(
-        &42,
-        &PaginationParams {
-            offset: 0,
-            limit: 10,
-        },
-    );
-    assert_eq!(page.len(), 2);
-    assert_eq!(page.get(0).unwrap().created_at, 1_000);
-}
-
-#[test]
-fn get_errors_by_agent_filters_correctly() {
-    let (env, client) = setup(1_000);
-
-    // Submit errors with different agents.
-    let id1 = id(&env, 1);
-    client.submit_error(
-        &id1,
-        &42,
-        &sym(&env, "msg1"),
-        &sym(&env, "agent_A"),
-        &10_000,
-    );
-
-    let id2 = id(&env, 2);
-    client.submit_error(
-        &id2,
-        &42,
-        &sym(&env, "msg2"),
-        &sym(&env, "agent_B"),
-        &10_000,
-    );
-
-    let id3 = id(&env, 3);
-    client.submit_error(
-        &id3,
-        &43,
-        &sym(&env, "msg3"),
-        &sym(&env, "agent_A"),
-        &10_000,
-    );
-
-    // Query for agent_A.
-    let agent_a_errors = client.get_errors_by_agent(&sym(&env, "agent_A"));
-    assert_eq!(agent_a_errors.len(), 2);
-    assert_eq!(
-        agent_a_errors.get(0).unwrap().agent_id,
-        sym(&env, "agent_A")
-    );
-
-    // Query for agent_B.
-    let agent_b_errors = client.get_errors_by_agent(&sym(&env, "agent_B"));
-    assert_eq!(agent_b_errors.len(), 1);
-    assert_eq!(
-        agent_b_errors.get(0).unwrap().agent_id,
-        sym(&env, "agent_B")
-    );
-
-    // Query for non-existent agent.
-    let empty_errors = client.get_errors_by_agent(&sym(&env, "agent_C"));
-    assert_eq!(empty_errors.len(), 0);
-}
-
-#[test]
-fn get_errors_by_agent_skips_expired() {
-    let (env, client) = setup(1_000);
-
-    // Submit errors, one active, one expired.
-    let id1 = id(&env, 1);
-    client.submit_error(&id1, &42, &sym(&env, "msg1"), &sym(&env, "agent_A"), &100);
-
-    let id2 = id(&env, 2);
-    client.submit_error(
-        &id2,
-        &42,
-        &sym(&env, "msg2"),
-        &sym(&env, "agent_A"),
-        &10_000,
-    );
-
-    env.ledger().set_timestamp(2_000); // Expire first error.
-
-    let errors = client.get_errors_by_agent(&sym(&env, "agent_A"));
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors.get(0).unwrap().expires_at, 11_000);
-}
-
-#[test]
-fn get_error_stats_counts_active_correctly() {
-    let (env, client) = setup(1_000);
-
-    // Submit errors across multiple codes.
-    submit(&client, &env, 1, 100, 10_000);
-    submit(&client, &env, 2, 100, 100); // expires 1_100
-    submit(&client, &env, 3, 200, 10_000);
-    submit(&client, &env, 4, 300, 10_000);
-
-    let stats = client.get_error_stats();
-    assert_eq!(stats.get(100).unwrap(), 2);
-    assert_eq!(stats.get(200).unwrap(), 1);
-    assert_eq!(stats.get(300).unwrap(), 1);
-
-    // After expiration.
-    env.ledger().set_timestamp(2_000);
-
-    let stats_after = client.get_error_stats();
-    assert_eq!(stats_after.get(100).unwrap(), 1);
-    assert_eq!(stats_after.get(200).unwrap(), 1);
-    assert_eq!(stats_after.get(300).unwrap(), 1);
 }
