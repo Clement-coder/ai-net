@@ -18,7 +18,7 @@ const navItems = [
 ]
 
 const Navbar: React.FC = () => {
-  const { publicKey, connected, disconnect } = useWallet()
+  const { publicKey, connected, connectionMethod, disconnect } = useWallet()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
@@ -156,6 +156,11 @@ const Navbar: React.FC = () => {
               <span className="text-[11px] font-medium text-text-primary font-mono tracking-wide mx-1">
                 {truncateKey(publicKey)}
               </span>
+              {connectionMethod && (
+                <span className="text-[9px] font-medium text-text-secondary/50 tracking-wide mx-1 hidden sm:inline">
+                  {connectionMethod === 'freighter' ? 'Freighter' : 'Secret Key'}
+                </span>
+              )}
               <motion.button
                 whileTap={{ scale: 0.9 }}
                 onClick={copyToClipboard}
