@@ -297,6 +297,7 @@ describe('HTTP dispatch integration (mock agent server)', () => {
 
   beforeAll(done => {
     agentCalls.length = 0;
+    paymentReleases.length = 0;
 
     // ── Minimal mock agent HTTP server ──────────────────────────────────────
     // Responds to POST /execute with a fixture result keyed by node.type.
@@ -398,6 +399,14 @@ describe('HTTP dispatch integration (mock agent server)', () => {
     expect(agentCalls.length).toBeGreaterThanOrEqual(AGENT_NODE_IDS.length);
   }, 130_000);
 
+  it('releases payment exactly once per node in HTTP dispatch mode', () => {
+    expect(paymentReleases.length).toBeGreaterThanOrEqual(AGENT_NODE_IDS.length);
+    const releasedNodeIds = paymentReleases.slice(-5).map(r => r.nodeId);
+    for (const nodeId of AGENT_NODE_IDS) {
+      expect(releasedNodeIds).toContain(nodeId);
+    }
+  });
+
   it('returns an error when no agent registry is configured and no dispatch provided', async () => {
     const { httpServer: bareServer, close } = createApp({ releasePayment: mockReleasePayment });
     await new Promise<void>(resolve => bareServer.listen(0, '127.0.0.1', resolve));
@@ -423,4 +432,63 @@ describe('HTTP dispatch integration (mock agent server)', () => {
     expect(status).toBe('failed');
     close();
   }, 20_000);
+});
+
+describe('HTTP dispatch — agent error handling', () => {
+  let appServer: HttpServer;
+  let agentServer: http.Server;
+  let closeTestApp: () => void;
+
+  beforeAll(done => {
+    // Agent server that always returns 500
+    agentServer = http.createServer((_req, res) => {
+      res.writeHead(500).end(JSON.stringify({ error: 'Internal server error' }));
+    });
+
+    agentServer.listen(0, '127.0.0.1', () => {
+      const agentAddr = agentServer.address() as AddressInfo;
+      const agentEndpoint = `http://127.0.0.1:${agentAddr.port}`;
+
+      const agentRegistry = {
+        getAgents: (agentType: string) => [
+          { id: `failing-${agentType}`, type: agentType, endpoint: agentEndpoint, cost: 1 },
+        ],
+      };
+
+      const { httpServer: srv, close } = createApp({
+        agentRegistry,
+        releasePayment: mockReleasePayment,
+      });
+
+      appServer = srv;
+      closeTestApp = close;
+      appServer.listen(0, '127.0.0.1', done);
+    });
+  }, 15_000);
+
+  afterAll(done => {
+    closeTestApp();
+    agentServer.close(done);
+  });
+
+  it('handles agent HTTP 500 response gracefully without crashing', async () => {
+    const postRes = await request(appServer)
+      .post('/api/tasks')
+      .send({ prompt: PROMPT, walletPublicKey: 'GFAKEWALLETPUBLICKEY' });
+
+    expect(postRes.status).toBe(201);
+    const { taskId } = postRes.body as { taskId: string };
+
+    const deadline = Date.now() + 90_000;
+    let status = 'queued';
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 200));
+      const getRes = await request(appServer)
+        .get(`/api/tasks/${taskId}`)
+        .set('walletpublickey', 'GFAKEWALLETPUBLICKEY');
+      status = (getRes.body as { status: string }).status;
+      if (status === 'failed' || status === 'completed') break;
+    }
+    expect(status).toBe('failed');
+  }, 100_000);
 });
