@@ -423,4 +423,62 @@ describe('HTTP dispatch integration (mock agent server)', () => {
     expect(status).toBe('failed');
     close();
   }, 20_000);
+
+  /**
+   * Literal acceptance test from issue #173: when the registry is provided but
+   * returns no agents for a node's type, every node must fail with a clear,
+   * descriptive error message rather than a generic / silent failure.
+   */
+  it('reports "No agent registered for type:<x>" when registry returns no agents', async () => {
+    const emptyRegistry = {
+      getAgents: (_agentType: string) => [] as Array<{ id: string; type: string; endpoint: string; cost: number }>,
+    };
+
+    const { httpServer: srv, close } = createApp({
+      agentRegistry: emptyRegistry,
+      releasePayment: mockReleasePayment,
+    });
+    await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve));
+
+    try {
+      const postRes = await request(srv)
+        .post('/api/tasks')
+        .send({ prompt: PROMPT, walletPublicKey: 'GFAKEWALLETPUBLICKEY' });
+
+      expect(postRes.status).toBe(201);
+      const { taskId } = postRes.body as { taskId: string };
+
+      // Wait for the task to settle as failed
+      type DagNode = { nodeId: string; type: string; status: string; error?: string };
+      type TaskBody = { status: string; dag: DagNode[] };
+
+      const deadline = Date.now() + 15_000;
+      let body: TaskBody | null = null;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 100));
+        const getRes = await request(srv)
+          .get(`/api/tasks/${taskId}`)
+          .set('walletpublickey', 'GFAKEWALLETPUBLICKEY');
+        body = getRes.body as TaskBody;
+        if (body && body.status === 'failed') break;
+      }
+
+      expect(body).not.toBeNull();
+      expect(body!.status).toBe('failed');
+
+      // At least one failed DAG node must carry the descriptive "No agent
+      // registered for type:" message so an operator can immediately tell
+      // which capability is unconfigured.
+      // (Downstream nodes may carry "upstream_failed" due to the coordinator's
+      //  cascade — that's expected behavior, not the error under test.)
+      const failedNodes = body!.dag.filter(n => n.status === 'failed');
+      expect(failedNodes.length).toBeGreaterThan(0);
+      const withAgentErr = failedNodes.filter(n =>
+        typeof n.error === 'string' && /No agent registered for type: \w+/.test(n.error),
+      );
+      expect(withAgentErr.length).toBeGreaterThan(0);
+    } finally {
+      close();
+    }
+  }, 20_000);
 });
