@@ -191,7 +191,6 @@ describe('httpDispatch', () => {
       const expected = { data: 'after rate limit' };
       const mockFetch = failThenSucceedFetch(1, expected);
       // Override the first call to return 429
-      const originalImpl = (mockFetch as jest.Mock).getMockImplementation()!;
       let firstCall = true;
       (mockFetch as jest.Mock).mockImplementation(() => {
         if (firstCall) {
