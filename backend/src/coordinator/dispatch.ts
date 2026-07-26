@@ -4,6 +4,11 @@
  * Sends a DAG node to a remote agent endpoint via HTTP POST and returns the
  * parsed JSON response.  Retries on transient/5xx errors using exponential
  * back-off; gives up after `maxRetries` attempts and rethrows the last error.
+ *
+ * Implements the real HTTP dispatch required by issue #169:
+ * replaces the `defaultDispatch` stub that always threw, restoring the full
+ * agent coordination pipeline.  Timeout, retry behaviour, and agent endpoint
+ * resolution are all configurable via {@link DispatchOptions}.
  */
 
 import type { AgentRegistration } from '../types/agent';
