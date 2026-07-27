@@ -20,7 +20,7 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     windows.set(ip, win);
   }
 
-  win.timestamps = win.timestamps.filter((t) => t > cutoff);
+  win.timestamps = win.timestamps.filter((t: number) => t > cutoff);
 
   if (win.timestamps.length >= MAX_REQUESTS) {
     const oldest = win.timestamps[0]!;
