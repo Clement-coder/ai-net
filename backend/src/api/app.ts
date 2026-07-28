@@ -30,6 +30,7 @@ import { requestLogger } from "./middleware/requestLogger";
 import { errorHandler } from "./middleware/errorHandler";
 import { createLogger } from "../utils/logger";
 import { createTaskDb, getTaskDb } from "../db/tasks";
+import { createHeartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat";
 import { openapiSpec } from "./docs/openapi";
 
 export interface AppOptions {
@@ -46,6 +47,10 @@ export interface AppOptions {
    * Required when `dispatch` is not provided; ignored when `dispatch` is set.
    */
   agentRegistry?: AgentRegistry;
+  /** Enable background heartbeat cleanup service (defaults to true in non-test envs) */
+  enableHeartbeatCleanup?: boolean;
+  /** Custom options for heartbeat cleanup service */
+  heartbeatOptions?: HeartbeatServiceOptions;
 }
 
 /**
@@ -84,6 +89,12 @@ export function createApp(opts: AppOptions = {}): {
   const dispatch: DispatchFn = opts.dispatch ?? makeHttpDispatch(opts.agentRegistry);
   const releasePayment: PaymentReleaseFn =
     opts.releasePayment ?? createPaymentReleaseFn(tryLoadStellarRelease());
+
+  // ── Heartbeat Background Cleanup Service ────────────────────────────────────
+  const heartbeatService = createHeartbeatService(opts.heartbeatOptions);
+  if (opts.enableHeartbeatCleanup || (opts.enableHeartbeatCleanup !== false && process.env.NODE_ENV !== "test")) {
+    heartbeatService.start();
+  }
 
   // ── Health routes ───────────────────────────────────────────────────────────
   app.use("/health", healthRouter);
@@ -131,6 +142,7 @@ export function createApp(opts: AppOptions = {}): {
   app.use(errorHandler);
 
   function close(callback?: () => void): void {
+    heartbeatService.stop();
     detachStream();
     stopRecording();
     eventStore.close();
@@ -139,6 +151,7 @@ export function createApp(opts: AppOptions = {}): {
 
   return { httpServer, close };
 }
+
 
 /**
  * Build a DispatchFn that looks up the cheapest agent for a node's type in the

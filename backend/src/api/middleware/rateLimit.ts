@@ -134,3 +134,11 @@ export const rateLimitMiddleware = defaultLimiter.middleware;
  */
 const registerLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 10 });
 export const registerRateLimitMiddleware = registerLimiter.middleware;
+
+/**
+ * Rate limiter used by POST /api/agents/:id/heartbeat.
+ * 60 requests per minute per IP to allow periodic agent pings while preventing abuse.
+ */
+const heartbeatLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+export const heartbeatRateLimitMiddleware = heartbeatLimiter.middleware;
+
