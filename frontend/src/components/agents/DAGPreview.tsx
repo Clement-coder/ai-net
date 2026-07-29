@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import ReactFlow, { Background, Controls, ConnectionLineType, Edge, MarkerType, Node, NodeProps, Position, Handle } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { DagEdge, DagNode } from '../../services/taskService';
+import styles from './DAGPreview.module.css';
 
 export type DAGPreviewProps = {
   dagPreview?: {
@@ -82,7 +83,7 @@ export function DAGPreview({ dagPreview }: DAGPreviewProps) {
   }
 
   return (
-    <div style={{ width: '100%', height: 320, borderRadius: 12, overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+    <div className={styles.container}>
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
