@@ -14,20 +14,20 @@
   gap: 10px;
   font-size: 1.5rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--text-primary);
   margin: 0;
 }
 
 .subtitle {
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 0.875rem;
   margin: 8px 0 0;
 }
 
 /* Connect card (when not connected) */
 .connectCard {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 32px;
   max-width: 440px;
@@ -37,18 +37,18 @@
   display: block;
   font-size: 0.875rem;
   font-weight: 500;
-  color: #334155;
+  color: var(--text-secondary);
   margin-bottom: 8px;
 }
 
 .secretInput {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   font-size: 0.875rem;
   font-family: monospace;
-  background: #f8fafc;
+  background: var(--bg-secondary);
   transition: border-color 0.15s, box-shadow 0.15s;
   box-sizing: border-box;
 }
@@ -125,7 +125,7 @@
   align-items: center;
   gap: 12px;
   margin: 20px 0;
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-size: 0.8125rem;
 }
 
@@ -134,7 +134,7 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: #e2e8f0;
+  background: var(--border-color);
 }
 
 /* Helper text */
@@ -142,7 +142,7 @@
   display: flex;
   align-items: center;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--text-secondary);
   margin: 8px 0 0;
 }
 
@@ -242,7 +242,7 @@
 }
 
 .qrCode {
-  background: #ffffff;
+  background: var(--bg-primary);
   padding: 8px;
   border-radius: 8px;
   flex-shrink: 0;
@@ -334,7 +334,7 @@
 }
 
 .error {
-  color: #dc2626;
+  color: var(--danger);
   font-size: 0.8125rem;
   margin: 4px 0 0;
 }
