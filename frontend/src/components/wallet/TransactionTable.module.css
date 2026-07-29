@@ -33,6 +33,22 @@
   letter-spacing: 0.05em;
 }
 
+@media (max-width: 768px) {
+  .header {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .header {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 6px 8px;
+  }
+}
+
 .row {
   display: grid;
   grid-template-columns: 60px 1fr 1fr 1fr 80px 40px;
@@ -42,6 +58,22 @@
   border-bottom: 1px solid #f1f5f9;
   font-size: 0.8125rem;
   transition: background 0.1s;
+}
+
+@media (max-width: 768px) {
+  .row {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 8px;
+  }
 }
 
 .row:last-child {
