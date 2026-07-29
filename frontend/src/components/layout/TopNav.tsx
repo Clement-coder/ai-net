@@ -17,7 +17,7 @@ const TopNav: React.FC<TopNavProps> = ({
   isMobile,
   isDrawerOpen = false,
 }) => {
-  const { publicKey, connected, disconnect } = useWallet()
+  const { publicKey, connected, connectionMethod, disconnect } = useWallet()
 
   const getTitle = () => {
     const path = window.location.pathname
@@ -79,6 +79,11 @@ const TopNav: React.FC<TopNavProps> = ({
             <span className="wallet-chip connected" id="wallet-pubkey-display">
               {truncateKey(publicKey)}
             </span>
+            {connectionMethod && (
+              <span className="wallet-chip connected" style={{ fontSize: '10px', padding: '2px 6px' }}>
+                {connectionMethod === 'freighter' ? 'Freighter' : 'Secret Key'}
+              </span>
+            )}
             <button 
               className="disconnect-btn"
               onClick={disconnect}

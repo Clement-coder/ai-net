@@ -1,6 +1,7 @@
 import React from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { WalletProvider } from './context/WalletContext'
+import { NotFoundPage } from './pages/NotFoundPage';
 import AppShell from './components/layout/AppShell'
 import LandingPage from './pages/LandingPage'
 import AgentsPage from './pages/AgentsPage'
@@ -25,13 +26,15 @@ const AppContent: React.FC = () => {
               <Route path="/tasks/new" element={<NewTaskPage />} />
               <Route path="/tasks/:id" element={<TaskDetailPage />} />
               <Route path="/renderer-demo" element={<RendererDemoPage />} />
+              <Route path="*" element={<NotFoundPage />} />
             </Routes>
           </AppShell>
         } />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </Router>
-  )
-}
+  );
+};
 
 const App: React.FC = () => {
   return (
